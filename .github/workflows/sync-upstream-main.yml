@@ -1,0 +1,94 @@
+name: Sync Upstream Main
+
+on:
+  schedule:
+    # Runs every day at 09:00 Asia/Hong_Kong (01:00 UTC).
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_repository:
+        description: 'Upstream repository in owner/name format'
+        required: true
+        default: 'iOfficeAI/AionUi'
+        type: string
+      upstream_branch:
+        description: 'Upstream branch to sync from'
+        required: true
+        default: 'main'
+        type: string
+      target_branch:
+        description: 'Local branch to update'
+        required: true
+        default: 'main'
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Fast-forward main from upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Validate token
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Missing GH_TOKEN secret. Configure a PAT with repo contents write access; include workflow scope so upstream workflow-file changes can be synced."
+            exit 1
+          fi
+
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.target_branch || 'main' }}
+          fetch-depth: 0
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Sync from upstream
+        env:
+          UPSTREAM_REPOSITORY: ${{ github.event.inputs.upstream_repository || 'iOfficeAI/AionUi' }}
+          UPSTREAM_BRANCH: ${{ github.event.inputs.upstream_branch || 'main' }}
+          TARGET_BRANCH: ${{ github.event.inputs.target_branch || 'main' }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}" --tags
+          git fetch origin "${TARGET_BRANCH}"
+
+          git checkout "${TARGET_BRANCH}"
+
+          local_head="$(git rev-parse HEAD)"
+          upstream_head="$(git rev-parse "upstream/${UPSTREAM_BRANCH}")"
+
+          echo "Target branch: ${TARGET_BRANCH}"
+          echo "Upstream branch: ${UPSTREAM_REPOSITORY}/${UPSTREAM_BRANCH}"
+          echo "Local HEAD: ${local_head}"
+          echo "Upstream HEAD: ${upstream_head}"
+
+          if [ "$local_head" = "$upstream_head" ]; then
+            echo "Already up to date."
+            exit 0
+          fi
+
+          if ! git merge-base --is-ancestor "$local_head" "$upstream_head"; then
+            echo "::error::Cannot fast-forward ${TARGET_BRANCH}. The branch has commits that are not in upstream/${UPSTREAM_BRANCH}."
+            echo "::error::Resolve the divergence manually before re-running this workflow."
+            exit 1
+          fi
+
+          git merge --ff-only "upstream/${UPSTREAM_BRANCH}"
+          git push origin "HEAD:${TARGET_BRANCH}"

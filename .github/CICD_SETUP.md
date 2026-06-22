@@ -8,11 +8,12 @@
 
 ### 1. `build-and-release.yml` - 主构建和发布流
 
-- **触发时机**: 仅推送到 `main` 分支
+- **触发时机**: 推送到 `master` 或 `release` 分支，或推送正式 tag
 - **功能**:
   - 代码质量检查 (ESLint, Prettier, TypeScript)
   - 多平台构建 (macOS Intel/Apple Silicon, Windows, Linux)
-  - 自动创建版本标签
+  - `master` 分支自动创建开发预发布标签
+  - `release` 分支自动创建稳定发版标签
   - 创建 Draft Release (需要手动审批和发布)
 - **流程**:
   1. 代码质量检查
@@ -20,6 +21,17 @@
   3. 自动创建基于 package.json 版本的标签
   4. 等待环境审批
   5. 创建 Draft Release (需要手动编辑和发布)
+
+### 2. `sync-upstream-main.yml` - 上游同步流
+
+- **触发时机**: 每天 09:00 (Asia/Hong_Kong) 自动运行，也支持手动触发
+- **功能**:
+  - 从上游仓库 `iOfficeAI/AionUi` 的 `main` 分支拉取更新
+  - 仅在本仓库 `main` 可以 fast-forward 时同步
+  - 如果 `main` 出现非上游提交，会直接失败并要求人工处理
+- **注意**:
+  - GitHub schedule 只会从仓库默认分支读取 workflow。若要保持 `main` 不承载本仓库自定义 workflow，请将默认分支设置为 `master`。
+  - 需要配置 `GH_TOKEN`，权限至少包含仓库内容写入；建议包含 `workflow` scope，以便上游修改 `.github/workflows/` 时也能同步。
 
 ## 必需的 GitHub Secrets 配置
 
@@ -98,7 +110,7 @@ GH_TOKEN=相同的Personal Access Token
    - 运行代码质量检查
    - 升级版本号
    - 创建 git tag
-   - 推送到 main 分支
+   - 推送到发版分支
 4. GitHub Actions 自动触发构建
 5. 在 Deployments 页面审批发布
 6. 编辑 Draft Release 内容
@@ -107,7 +119,7 @@ GH_TOKEN=相同的Personal Access Token
 ### 直接推送发布
 
 1. 手动修改 `package.json` 中的版本号
-2. 提交并推送到 `main` 分支
+2. 提交并推送到 `release` 分支
 3. GitHub Actions 将自动构建并创建 Draft Release
 
 ### 版本管理规范

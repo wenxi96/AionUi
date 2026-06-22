@@ -8,7 +8,7 @@ permissions:
 
 on:
   push:
-    branches: [dev]
+    branches: [master, release]
     tags:
       - '*'
 
@@ -20,7 +20,7 @@ jobs:
   code-quality:
     name: Code Quality
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/dev' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-'))
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-'))
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -57,8 +57,8 @@ jobs:
     name: Build Pipeline
     uses: ./.github/workflows/_build-reusable.yml
     needs: code-quality
-    # dev 分支或正式 tag 触发构建（排除 -dev- tag，避免重复构建）
-    if: needs.code-quality.result == 'success' && (github.ref == 'refs/heads/dev' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-')))
+    # master/release 分支或正式 tag 触发构建（排除 -dev- tag，避免重复构建）
+    if: needs.code-quality.result == 'success' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-')))
     with:
       skip_code_quality: true
       matrix: >-
@@ -76,8 +76,8 @@ jobs:
     name: Pack Web CLI
     uses: ./.github/workflows/pack-web-cli.yml
     needs: code-quality
-    # 与桌面构建同频触发：dev 分支或正式 tag（排除 -dev- tag）
-    if: needs.code-quality.result == 'success' && (github.ref == 'refs/heads/dev' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-')))
+    # 与桌面构建同频触发：master/release 分支或正式 tag（排除 -dev- tag）
+    if: needs.code-quality.result == 'success' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-')))
     with:
       ref: ''
       append_commit_hash: false
@@ -140,12 +140,12 @@ jobs:
             exit 1
           fi
 
-  # 自动创建tag（仅 dev 分支推送时）
+  # 自动创建 tag（master 分支创建预发布 tag，release 分支创建稳定 tag）
   create-tag:
     name: Create Tag from Branch
     runs-on: ubuntu-latest
     needs: [build-pipeline]
-    if: success() && github.ref == 'refs/heads/dev'
+    if: success() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release')
     outputs:
       tag_name: ${{ steps.create_tag.outputs.tag_name }}
       is_dev: ${{ steps.create_tag.outputs.is_dev }}
@@ -178,7 +178,7 @@ jobs:
           BRANCH_NAME=${GITHUB_REF#refs/heads/}
 
           # 根据分支确定 tag 格式
-          if [ "$BRANCH_NAME" = "dev" ]; then
+          if [ "$BRANCH_NAME" = "master" ]; then
             TAG_NAME="v${VERSION}-dev-${COMMIT_SHORT}"
             IS_DEV="true"
             echo "🔧 Development release: $TAG_NAME"
@@ -194,7 +194,7 @@ jobs:
           # 检查远程tag是否已存在
           if git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME$"; then
             if [ "$IS_DEV" = "false" ]; then
-              # Main 分支：需要递增版本并修改 package.json
+              # Stable 分支：需要递增版本并修改 package.json
               echo "⚠️ Tag $TAG_NAME already exists, auto-incrementing version..."
 
               if [[ $VERSION =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
@@ -231,8 +231,8 @@ jobs:
                 echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
               fi
             else
-              # Dev 分支 tag 已存在则失败（不应该发生）
-              echo "⚠️ Dev tag $TAG_NAME already exists, this shouldn't happen"
+              # Master 分支预发布 tag 已存在则失败（不应该发生）
+              echo "⚠️ Master prerelease tag $TAG_NAME already exists, this shouldn't happen"
               exit 1
             fi
           fi
@@ -257,7 +257,7 @@ jobs:
     needs: [build-pipeline, create-tag, pack-web-cli]
     # Tag 推送时 create-tag 会被跳过，所以需要检查两种情况（排除 -dev- tag 避免重复）
     if: always() && needs.build-pipeline.result == 'success' && needs.pack-web-cli.result == 'success' && (needs.create-tag.result == 'success' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-')))
-    # dev 分支使用 dev-release 环境，正式 tag 使用 release 环境
+    # master 分支使用 dev-release 环境，release/正式 tag 使用 release 环境
     environment: ${{ needs.create-tag.outputs.is_dev == 'true' && 'dev-release' || 'release' }}
 
     steps:
@@ -267,17 +267,21 @@ jobs:
       - name: Get version for release
         id: version
         run: |
-          # 判断触发来源：正式 tag 推送 or dev 分支
+          # 判断触发来源：正式 tag 推送 or 分支推送
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             # 正式 Tag 推送触发（-dev- tag 已被排除，不会到达这里）
             TAG_NAME="${GITHUB_REF#refs/tags/}"
             IS_DEV="false"
             echo "🚀 Creating stable release from tag: $TAG_NAME"
           else
-            # dev 分支触发，使用 create-tag job 的输出
+            # master/release 分支触发，使用 create-tag job 的输出
             TAG_NAME="${{ needs.create-tag.outputs.tag_name }}"
             IS_DEV="${{ needs.create-tag.outputs.is_dev }}"
-            echo "🔧 Creating development release: $TAG_NAME"
+            if [ "$IS_DEV" = "true" ]; then
+              echo "🔧 Creating development release: $TAG_NAME"
+            else
+              echo "🚀 Creating stable release: $TAG_NAME"
+            fi
           fi
 
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
