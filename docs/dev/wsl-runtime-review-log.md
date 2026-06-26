@@ -103,4 +103,21 @@ Disposition:
 Verification:
 
 - GitHub Actions run `28222485306` reproduced the failure: the prepare step downloaded `aioncore-manual-windows-x64` from `wenxi96/AionUi`, then the Windows build step retried against `iOfficeAI/AionCore` and received a 404.
-- Re-run required after pushing the workflow fix.
+- GitHub Actions run `28223010150` passed after the workflow fix. The Windows build step received `AIONUI_BACKEND_REPOSITORY=wenxi96/AionUi` and downloaded `aioncore-manual-windows-x64` from AionCore run `28221498446`.
+
+## Review Round 6
+
+Status: no new findings.
+
+Checks:
+
+- Confirmed the final AionUi manual Windows build used `aioncore_run_id=28221498446` and `aioncore_repository=wenxi96/AionUi`.
+- Confirmed both the standalone `Prepare aioncore binary` step and the `Build with electron-builder (Windows)` step used the alternate AionCore artifact repository.
+- Confirmed the Windows installer was produced as `AionUi-2.1.21-win-x64.exe`.
+- Confirmed the uploaded Actions artifact was `windows-build-x64-e4c0734` with artifact ID `7899785088`.
+
+Verification:
+
+- GitHub Actions run `28223010150`: `Prepare Build Matrix`, `Code Quality`, `Build windows-x64`, and `Build Summary` completed successfully.
+- Downloaded artifact `windows-build-x64-e4c0734` and inspected the archive contents: `AionUi-2.1.21-win-x64.exe`.
+- Copied the installer to `/mnt/d/下载/AionUi-2.1.21-win-x64.exe` for Windows-side manual installation testing.
