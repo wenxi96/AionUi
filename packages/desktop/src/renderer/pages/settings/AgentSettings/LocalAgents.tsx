@@ -5,6 +5,10 @@
  */
 
 import { ipcBridge } from '@/common';
+import type {
+  WslRuntimeDiagnostics as WslRuntimeDiagnosticsPayload,
+  WslRuntimeSettings,
+} from '@/common/adapter/ipcBridge';
 import { isWslRuntime, type AgentMetadata } from '@/renderer/utils/model/agentTypes';
 import AionModal from '@/renderer/components/base/AionModal';
 import { useManagedAgents } from '@/renderer/hooks/agent/useAgents';
@@ -25,6 +29,7 @@ const LocalAgents: React.FC = () => {
   const [hubModalVisible, setHubModalVisible] = useState(false);
   const [wslRuntimeEnabled, setWslRuntimeEnabled] = useState<boolean>();
   const [wslRuntimeSupported, setWslRuntimeSupported] = useState<boolean>();
+  const [wslRuntimeDiagnostics, setWslRuntimeDiagnostics] = useState<WslRuntimeDiagnosticsPayload>();
   const [wslRuntimeUpdating, setWslRuntimeUpdating] = useState(false);
   const [wslRuntimeError, setWslRuntimeError] = useState<unknown>(null);
 
@@ -56,26 +61,16 @@ const LocalAgents: React.FC = () => {
   const [editorVisible, setEditorVisible] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentMetadata | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    ipcBridge.acpConversation.getWslRuntimeSettings
-      .invoke()
-      .then((settings) => {
-        if (!cancelled) {
-          setWslRuntimeEnabled(settings.enabled);
-          setWslRuntimeSupported(settings.supported ?? true);
-          setWslRuntimeError(null);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setWslRuntimeError(err);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
+  const applyWslRuntimeSettings = useCallback((settings: WslRuntimeSettings) => {
+    setWslRuntimeEnabled(settings.enabled);
+    setWslRuntimeSupported(settings.supported ?? true);
+    setWslRuntimeDiagnostics(settings.diagnostics);
+    setWslRuntimeError(null);
   }, []);
+
+  const loadWslRuntimeSettings = useCallback(async () => {
+    applyWslRuntimeSettings(await ipcBridge.acpConversation.getWslRuntimeSettings.invoke());
+  }, [applyWslRuntimeSettings]);
 
   const handleSaveCustomAgent = useCallback(
     async (draft: CustomAgentDraft) => {
@@ -146,16 +141,34 @@ const LocalAgents: React.FC = () => {
 
   const refreshDetectedAgents = useCallback(async () => {
     await refreshCustomAgents();
-  }, [refreshCustomAgents]);
+    await loadWslRuntimeSettings();
+  }, [loadWslRuntimeSettings, refreshCustomAgents]);
+
+  useEffect(() => {
+    let cancelled = false;
+    ipcBridge.acpConversation.getWslRuntimeSettings
+      .invoke()
+      .then((settings) => {
+        if (!cancelled) {
+          applyWslRuntimeSettings(settings);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setWslRuntimeError(err);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyWslRuntimeSettings]);
 
   const handleToggleWslRuntime = useCallback(
     async (enabled: boolean) => {
       setWslRuntimeUpdating(true);
       try {
         const settings = await ipcBridge.acpConversation.updateWslRuntimeSettings.invoke({ enabled });
-        setWslRuntimeEnabled(settings.enabled);
-        setWslRuntimeSupported(settings.supported ?? true);
-        setWslRuntimeError(null);
+        applyWslRuntimeSettings(settings);
         await mutateAgents();
       } catch (err) {
         setWslRuntimeError(err);
@@ -163,7 +176,7 @@ const LocalAgents: React.FC = () => {
         setWslRuntimeUpdating(false);
       }
     },
-    [mutateAgents]
+    [applyWslRuntimeSettings, mutateAgents]
   );
 
   return (
@@ -204,6 +217,7 @@ const LocalAgents: React.FC = () => {
         onRefresh={() => void refreshDetectedAgents()}
         runtimeEnabled={wslRuntimeEnabled}
         runtimeSupported={wslRuntimeSupported}
+        diagnostics={wslRuntimeDiagnostics}
         runtimeUpdating={wslRuntimeUpdating}
         onToggleRuntime={(enabled) => void handleToggleWslRuntime(enabled)}
       />

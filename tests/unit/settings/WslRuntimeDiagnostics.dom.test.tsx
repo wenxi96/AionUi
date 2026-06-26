@@ -138,6 +138,38 @@ describe('WslRuntimeDiagnostics', () => {
     expect(screen.getByTestId('wsl-runtime-empty')).toHaveTextContent('settings.agentManagement.wslDiagnosticsEmpty');
   });
 
+  it('shows WSL distro diagnostics even when no WSL CLI rows are detected', () => {
+    render(
+      <WslRuntimeDiagnostics
+        agents={[nativeAgent()]}
+        onRefresh={vi.fn()}
+        runtimeEnabled
+        runtimeSupported
+        diagnostics={{
+          wsl_available: true,
+          status_lines: ['Default Distribution: Ubuntu-24.04'],
+          version_lines: ['WSL version: 2.5.10'],
+          distros: [{ name: 'Ubuntu-24.04', state: 'Running', version: 2 }],
+          issues: [],
+        }}
+      />
+    );
+
+    expect(screen.getByTestId('wsl-runtime-row-count')).toHaveTextContent(
+      'settings.agentManagement.wslDiagnosticsRows:0'
+    );
+    expect(screen.getByTestId('wsl-runtime-distro-count')).toHaveTextContent(
+      'settings.agentManagement.wslDiagnosticsDistros:1'
+    );
+    expect(screen.getByTestId('wsl-runtime-status')).toHaveTextContent('settings.agentManagement.detected');
+    expect(screen.getByTestId('wsl-runtime-base-info')).toHaveTextContent('WSL version: 2.5.10');
+    expect(screen.getByText('Ubuntu-24.04')).toBeTruthy();
+    expect(screen.getByText('Running')).toBeTruthy();
+    expect(screen.getByText('WSL2')).toBeTruthy();
+    expect(screen.getByText('settings.agentManagement.wslDiagnosticsCliCount:0')).toBeTruthy();
+    expect(screen.queryByTestId('wsl-runtime-empty')).toBeNull();
+  });
+
   it('does not render WSL diagnostics on unsupported hosts', () => {
     render(<WslRuntimeDiagnostics agents={[wslAgent()]} onRefresh={vi.fn()} runtimeEnabled runtimeSupported={false} />);
 

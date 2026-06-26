@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { WslRuntimeDiagnostics as WslRuntimeDiagnosticsPayload } from '@/common/adapter/ipcBridge';
 import type { AgentMetadata } from '@/renderer/utils/model/agentTypes';
 import { isWslRuntime } from '@/renderer/utils/model/agentTypes';
 import { Button, Switch, Tag, Typography } from '@arco-design/web-react';
@@ -18,6 +19,7 @@ type WslRuntimeDiagnosticsProps = {
   onRefresh: () => void;
   runtimeEnabled?: boolean;
   runtimeSupported?: boolean;
+  diagnostics?: WslRuntimeDiagnosticsPayload;
   runtimeUpdating?: boolean;
   onToggleRuntime?: (enabled: boolean) => void;
 };
@@ -26,6 +28,7 @@ type WslDistroSummary = {
   distro: string;
   state?: string;
   version?: 1 | 2;
+  skippedReason?: string;
   probeModes: string[];
   cliPaths: string[];
   rows: AgentMetadata[];
@@ -42,8 +45,23 @@ function isWslAgent(agent: AgentMetadata): boolean {
   return isWslRuntime(agent.runtime) || agent.runtime_scope_id?.startsWith('wsl:') === true;
 }
 
-function buildWslSummaries(agents: AgentMetadata[]): WslDistroSummary[] {
+function buildWslSummaries(
+  agents: AgentMetadata[],
+  diagnostics?: WslRuntimeDiagnosticsPayload
+): WslDistroSummary[] {
   const summaries = new Map<string, WslDistroSummary>();
+
+  for (const distro of diagnostics?.distros ?? []) {
+    summaries.set(distro.name, {
+      distro: distro.name,
+      state: distro.state,
+      version: distro.version === 1 || distro.version === 2 ? distro.version : undefined,
+      skippedReason: distro.skipped_reason,
+      probeModes: [],
+      cliPaths: [],
+      rows: [],
+    });
+  }
 
   for (const agent of agents.filter(isWslAgent)) {
     const runtime = isWslRuntime(agent.runtime) ? agent.runtime : undefined;
@@ -89,13 +107,16 @@ const WslRuntimeDiagnostics: React.FC<WslRuntimeDiagnosticsProps> = ({
   onRefresh,
   runtimeEnabled,
   runtimeSupported,
+  diagnostics,
   runtimeUpdating,
   onToggleRuntime,
 }) => {
   const { t } = useTranslation();
-  const summaries = useMemo(() => buildWslSummaries(agents), [agents]);
+  const summaries = useMemo(() => buildWslSummaries(agents, diagnostics), [agents, diagnostics]);
   const wslRows = useMemo(() => agents.filter(isWslAgent), [agents]);
   const unavailableCount = wslRows.filter((agent) => agent.available === false || agent.enabled === false).length;
+  const wslVersionLine = diagnostics?.version_lines?.[0];
+  const wslStatusLine = diagnostics?.status_lines?.[0];
 
   if (runtimeSupported !== true) {
     return null;
@@ -121,6 +142,13 @@ const WslRuntimeDiagnostics: React.FC<WslRuntimeDiagnosticsProps> = ({
             {unavailableCount > 0 && (
               <Tag size='small' color='orangered' data-testid='wsl-runtime-unavailable-count'>
                 {t('settings.agentManagement.wslDiagnosticsUnavailable', { count: unavailableCount })}
+              </Tag>
+            )}
+            {diagnostics && (
+              <Tag size='small' color={diagnostics.wsl_available ? 'green' : 'orangered'} data-testid='wsl-runtime-status'>
+                {diagnostics.wsl_available
+                  ? t('settings.agentManagement.detected')
+                  : t('settings.agentManagement.unavailable')}
               </Tag>
             )}
           </div>
@@ -155,6 +183,11 @@ const WslRuntimeDiagnostics: React.FC<WslRuntimeDiagnosticsProps> = ({
       {error && (
         <Typography.Text type='secondary' className='mb-8px block text-12px' data-testid='wsl-runtime-error'>
           {t('settings.agentManagement.runtimeDetectionFailed')}
+        </Typography.Text>
+      )}
+      {(wslVersionLine || wslStatusLine) && (
+        <Typography.Text type='secondary' className='mb-8px block text-12px' data-testid='wsl-runtime-base-info'>
+          {[wslVersionLine, wslStatusLine].filter(Boolean).join(' · ')}
         </Typography.Text>
       )}
 
@@ -198,6 +231,11 @@ const WslRuntimeDiagnostics: React.FC<WslRuntimeDiagnosticsProps> = ({
                   {t('settings.agentManagement.wslDiagnosticsCliPath', {
                     path: summary.cliPaths[0],
                   })}
+                </Typography.Text>
+              )}
+              {summary.skippedReason && (
+                <Typography.Text className='mt-4px block text-11px text-t-secondary' data-testid='wsl-runtime-skipped'>
+                  {summary.skippedReason}
                 </Typography.Text>
               )}
               <div className='mt-8px flex flex-col gap-6px' data-testid='wsl-runtime-cli-list'>

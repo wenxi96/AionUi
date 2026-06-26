@@ -763,6 +763,29 @@ export const mode = {
 export type WslRuntimeSettings = {
   enabled: boolean;
   supported?: boolean;
+  diagnostics?: WslRuntimeDiagnostics;
+};
+
+export type WslRuntimeDiagnostics = {
+  wsl_available: boolean;
+  status_lines?: string[];
+  version_lines?: string[];
+  distros?: WslRuntimeDistroDiagnostics[];
+  issues?: WslRuntimeIssueDiagnostics[];
+};
+
+export type WslRuntimeDistroDiagnostics = {
+  name: string;
+  state: string;
+  version?: 1 | 2 | number;
+  skipped_reason?: string;
+};
+
+export type WslRuntimeIssueDiagnostics = {
+  category: string;
+  code: string;
+  message: string;
+  stderr_summary?: string;
 };
 
 export const acpConversation = {

@@ -121,3 +121,31 @@ Verification:
 - GitHub Actions run `28223010150`: `Prepare Build Matrix`, `Code Quality`, `Build windows-x64`, and `Build Summary` completed successfully.
 - Downloaded artifact `windows-build-x64-e4c0734` and inspected the archive contents: `AionUi-2.1.21-win-x64.exe`.
 - Copied the installer to `/mnt/d/下载/AionUi-2.1.21-win-x64.exe` for Windows-side manual installation testing.
+
+## Review Round 7
+
+Status: finding reported, AionCore fix prepared locally.
+
+Findings:
+
+- Windows-side install smoke showed the WSL Runtime settings surface, but runtime diagnostics reported `行数: 0` and `发行版: 0` even though the active `Ubuntu-24.04` WSL distro contained `codex`, `claude`, `gemini`, `opencode`, and `hermes`.
+- AionCore derived WSL rows only from native ACP rows passing the public visibility filter. On Windows hosts where the matching CLI is installed only inside WSL and not on the Windows native PATH, those base rows are hidden before WSL probing starts, so no WSL runtime rows can be generated.
+- The intended WSL Runtime detection contract is to enter the WSL distro and resolve the corresponding CLI from that distro's user shell/PATH environment. A resolved WSL CLI path is the support signal for that runtime row and is carried into the launch metadata.
+- WSL base diagnostics should be independent from CLI-derived agent rows. When WSL exists but no configured CLI is found, the settings UI should still show WSL availability, version output, and distro state.
+
+Disposition:
+
+- Accepted. AionCore `AgentRegistry::refresh_wsl_rows` now probes enabled ACP catalog rows instead of requiring native Windows command availability.
+- Added a regression test covering an enabled native row whose Windows command is missing while the WSL probe finds the same CLI path inside `Ubuntu`.
+- Accepted. `/api/agents/runtime/wsl` now returns optional base diagnostics while WSL probing is enabled, and the AionUi diagnostics card merges those distro diagnostics with CLI-derived agent rows.
+- Accepted review follow-up. Managed ACP WSL rows now require the bridge prerequisite command (`npx`) to be available inside the same WSL distro before a row is exposed as detected.
+- Accepted review follow-up. AionCore now probes WSL status/version/distro state once per refresh cycle and reuses the registry diagnostics snapshot for `/api/agents/runtime/wsl`.
+
+Verification:
+
+- Confirmed `wsl.exe --list --verbose` reports `Ubuntu-24.04` as `Running`.
+- Confirmed WSL PATH resolves `codex`, `claude`, `gemini`, `opencode`, and `hermes`.
+- `git diff --check` passed in AionCore.
+- `npm run test -- tests/unit/settings/WslRuntimeDiagnostics.dom.test.tsx` passed.
+- `./node_modules/.bin/tsc --noEmit --pretty false` passed.
+- Local `cargo fmt` / focused `cargo test` could not run because this WSL shell currently has no `cargo` binary on PATH. Full verification still requires CI or a local Rust toolchain.
