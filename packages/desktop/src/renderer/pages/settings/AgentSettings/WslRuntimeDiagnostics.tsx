@@ -45,10 +45,7 @@ function isWslAgent(agent: AgentMetadata): boolean {
   return isWslRuntime(agent.runtime) || agent.runtime_scope_id?.startsWith('wsl:') === true;
 }
 
-function buildWslSummaries(
-  agents: AgentMetadata[],
-  diagnostics?: WslRuntimeDiagnosticsPayload
-): WslDistroSummary[] {
+function buildWslSummaries(agents: AgentMetadata[], diagnostics?: WslRuntimeDiagnosticsPayload): WslDistroSummary[] {
   const summaries = new Map<string, WslDistroSummary>();
 
   for (const distro of diagnostics?.distros ?? []) {
@@ -145,7 +142,11 @@ const WslRuntimeDiagnostics: React.FC<WslRuntimeDiagnosticsProps> = ({
               </Tag>
             )}
             {diagnostics && (
-              <Tag size='small' color={diagnostics.wsl_available ? 'green' : 'orangered'} data-testid='wsl-runtime-status'>
+              <Tag
+                size='small'
+                color={diagnostics.wsl_available ? 'green' : 'orangered'}
+                data-testid='wsl-runtime-status'
+              >
                 {diagnostics.wsl_available
                   ? t('settings.agentManagement.detected')
                   : t('settings.agentManagement.unavailable')}
