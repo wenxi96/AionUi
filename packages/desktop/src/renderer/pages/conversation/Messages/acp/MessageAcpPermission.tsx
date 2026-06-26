@@ -16,8 +16,17 @@ interface MessageAcpPermissionProps {
   message: IMessageAcpPermission;
 }
 
+type PermissionPathDetail = {
+  key: string;
+  label: string;
+  value: string;
+};
+
+const firstString = (...values: unknown[]): string | undefined =>
+  values.find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
 const MessageAcpPermission: React.FC<MessageAcpPermissionProps> = React.memo(({ message }) => {
-  const { options = [], tool_call } = message.content || {};
+  const { options = [], tool_call, runtime_context } = message.content || {};
   const { t } = useTranslation();
 
   // 基于实际数据生成显示信息
@@ -46,6 +55,52 @@ const MessageAcpPermission: React.FC<MessageAcpPermissionProps> = React.memo(({ 
     };
   };
   const { title, icon } = getToolInfo();
+  const permissionPathDetails: PermissionPathDetail[] = [];
+  const requestPath = firstString(
+    tool_call?.locations?.[0]?.path,
+    tool_call?.raw_input?.file_path,
+    tool_call?.raw_input?.path,
+    tool_call?.raw_input?.file_name,
+    runtime_context?.workspace_runtime_path
+  );
+
+  if (runtime_context) {
+    const runtimeName =
+      runtime_context.runtime_kind === 'wsl'
+        ? runtime_context.distro || runtime_context.runtime_display_name || runtime_context.runtime_scope_id
+        : runtime_context.runtime_display_name || runtime_context.runtime_kind;
+
+    permissionPathDetails.push({
+      key: 'runtime',
+      label: t('messages.permissionRuntime'),
+      value:
+        runtime_context.runtime_kind === 'wsl'
+          ? t('messages.permissionRuntimeWsl', { distro: runtimeName || 'WSL' })
+          : runtimeName || runtime_context.runtime_kind,
+    });
+
+    if (requestPath) {
+      permissionPathDetails.push({
+        key: 'agentPath',
+        label: t('messages.permissionAgentPath'),
+        value: requestPath,
+      });
+    }
+
+    permissionPathDetails.push({
+      key: 'hostPath',
+      label: t('messages.permissionHostPath'),
+      value: runtime_context.workspace_host_path,
+    });
+
+    if (runtime_context.agent_path) {
+      permissionPathDetails.push({
+        key: 'cliPath',
+        label: t('messages.permissionCliPath'),
+        value: runtime_context.agent_path,
+      });
+    }
+  }
   const [selected, setSelected] = useState<string | null>(null);
   const [isResponding, setIsResponding] = useState(false);
   const [hasResponded, setHasResponded] = useState(false);
@@ -95,6 +150,20 @@ const MessageAcpPermission: React.FC<MessageAcpPermissionProps> = React.memo(({ 
             <code className='text-xs bg-1 p-2 rounded block text-t-primary break-all'>
               {tool_call.raw_input?.command || tool_call.title}
             </code>
+          </div>
+        )}
+        {permissionPathDetails.length > 0 && (
+          <div
+            className='rounded p-2 text-xs'
+            style={{ background: 'var(--color-fill-2)' }}
+            data-testid='message-acp-permission-runtime-context'
+          >
+            {permissionPathDetails.map((item) => (
+              <div key={item.key} className='mb-1 last:mb-0'>
+                <Text className='text-t-secondary'>{item.label}</Text>
+                <code className='ml-2 break-all text-t-primary'>{item.value}</code>
+              </div>
+            ))}
           </div>
         )}
         {!hasResponded && (

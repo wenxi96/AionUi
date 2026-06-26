@@ -5,38 +5,77 @@
  */
 
 import { ipcBridge } from '@/common';
-import type { AgentMetadata } from '@/renderer/utils/model/agentTypes';
+import { isWslRuntime, type AgentMetadata } from '@/renderer/utils/model/agentTypes';
 import AionModal from '@/renderer/components/base/AionModal';
 import { useManagedAgents } from '@/renderer/hooks/agent/useAgents';
 import { Button, Typography } from '@arco-design/web-react';
-import { Home, Plus } from '@icon-park/react';
-import React, { useCallback, useState } from 'react';
+import { Home, Plus, Refresh } from '@icon-park/react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import AgentCard from './AgentCard';
 import { AgentHubModal } from './AgentHubModal';
 import InlineAgentEditor, { type CustomAgentDraft } from './InlineAgentEditor';
 import { getAgentKey } from '@/renderer/pages/guid/hooks/agentSelectionUtils';
+import WslRuntimeDiagnostics from './WslRuntimeDiagnostics';
 
 const LocalAgents: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [hubModalVisible, setHubModalVisible] = useState(false);
+  const [wslRuntimeEnabled, setWslRuntimeEnabled] = useState<boolean>();
+  const [wslRuntimeSupported, setWslRuntimeSupported] = useState<boolean>();
+  const [wslRuntimeUpdating, setWslRuntimeUpdating] = useState(false);
+  const [wslRuntimeError, setWslRuntimeError] = useState<unknown>(null);
 
   // Management view: includes user-disabled custom agents so they stay
   // listed (greyed) with a working re-enable toggle. `revalidate` here
   // refreshes both the management cache and the shared detected cache, so
   // toggling an agent on/off is reflected in the pickers too.
-  const { agents: allAgents, revalidate: mutateAgents } = useManagedAgents();
+  const {
+    agents: allAgents,
+    isLoading: agentsLoading,
+    error: agentsError,
+    revalidate: mutateAgents,
+    refreshCustomAgents,
+  } = useManagedAgents();
 
-  const detectedAgents = allAgents.filter(
+  const visibleAgents =
+    wslRuntimeSupported === true
+      ? allAgents
+      : allAgents.filter(
+          (agent) => !isWslRuntime(agent.runtime) && agent.runtime_scope_id?.startsWith('wsl:') !== true
+        );
+
+  const detectedAgents = visibleAgents.filter(
     (a) => (a.agent_type === 'acp' || a.agent_type === 'aionrs') && a.agent_source !== 'custom'
   );
 
-  const customAgents: AgentMetadata[] = allAgents.filter((a) => a.agent_source === 'custom');
+  const customAgents: AgentMetadata[] = visibleAgents.filter((a) => a.agent_source === 'custom');
 
   const [editorVisible, setEditorVisible] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentMetadata | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    ipcBridge.acpConversation.getWslRuntimeSettings
+      .invoke()
+      .then((settings) => {
+        if (!cancelled) {
+          setWslRuntimeEnabled(settings.enabled);
+          setWslRuntimeSupported(settings.supported ?? true);
+          setWslRuntimeError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setWslRuntimeError(err);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSaveCustomAgent = useCallback(
     async (draft: CustomAgentDraft) => {
@@ -105,19 +144,69 @@ const LocalAgents: React.FC = () => {
     [navigate]
   );
 
+  const refreshDetectedAgents = useCallback(async () => {
+    await refreshCustomAgents();
+  }, [refreshCustomAgents]);
+
+  const handleToggleWslRuntime = useCallback(
+    async (enabled: boolean) => {
+      setWslRuntimeUpdating(true);
+      try {
+        const settings = await ipcBridge.acpConversation.updateWslRuntimeSettings.invoke({ enabled });
+        setWslRuntimeEnabled(settings.enabled);
+        setWslRuntimeSupported(settings.supported ?? true);
+        setWslRuntimeError(null);
+        await mutateAgents();
+      } catch (err) {
+        setWslRuntimeError(err);
+      } finally {
+        setWslRuntimeUpdating(false);
+      }
+    },
+    [mutateAgents]
+  );
+
   return (
     <div className='flex flex-col gap-8px py-16px'>
-      <div className='px-16px text-12px text-t-secondary'>
-        <span>{t('settings.agentManagement.localAgentsDescription')} </span>
+      <div className='flex flex-wrap items-center justify-between gap-8px px-16px text-12px text-t-secondary'>
+        <div>
+          <span>{t('settings.agentManagement.localAgentsDescription')} </span>
+          <Button
+            type='text'
+            size='mini'
+            className='!h-auto !p-0 !align-baseline !text-12px !font-normal !text-primary-6 hover:!text-primary-7 hover:!underline underline-offset-2'
+            onClick={openCustomAgentEditor}
+          >
+            {t('settings.agentManagement.detectCustomAgent')}
+          </Button>
+        </div>
         <Button
-          type='text'
           size='mini'
-          className='!h-auto !p-0 !align-baseline !text-12px !font-normal !text-primary-6 hover:!text-primary-7 hover:!underline underline-offset-2'
-          onClick={openCustomAgentEditor}
+          type='secondary'
+          icon={<Refresh size='12' className={agentsLoading ? 'animate-spin' : ''} />}
+          loading={agentsLoading}
+          onClick={() => void refreshDetectedAgents()}
+          data-testid='agent-runtime-refresh'
         >
-          {t('settings.agentManagement.detectCustomAgent')}
+          {t('settings.agentManagement.refreshRuntimeDetection')}
         </Button>
       </div>
+      {agentsError && (
+        <Typography.Text type='secondary' className='block px-16px text-12px'>
+          {t('settings.agentManagement.runtimeDetectionFailed')}
+        </Typography.Text>
+      )}
+
+      <WslRuntimeDiagnostics
+        agents={visibleAgents}
+        loading={agentsLoading}
+        error={agentsError || wslRuntimeError}
+        onRefresh={() => void refreshDetectedAgents()}
+        runtimeEnabled={wslRuntimeEnabled}
+        runtimeSupported={wslRuntimeSupported}
+        runtimeUpdating={wslRuntimeUpdating}
+        onToggleRuntime={(enabled) => void handleToggleWslRuntime(enabled)}
+      />
 
       {process.env.NODE_ENV === 'development' && (
         <div className='px-16px mt-8px'>
@@ -161,7 +250,7 @@ const LocalAgents: React.FC = () => {
         )}
         {otherDetected.map((agent) => (
           <AgentCard
-            key={agent.backend || agent.agent_type}
+            key={agent.id || agent.backend || agent.agent_type}
             type='detected'
             agent={agent}
             onGoToChat={() => goToChatWithAgent(agent)}

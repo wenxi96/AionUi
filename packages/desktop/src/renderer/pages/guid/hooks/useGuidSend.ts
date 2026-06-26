@@ -10,14 +10,153 @@ import { buildAgentConversationParams } from '@/common/utils/buildAgentConversat
 import { toSessionMcpServer } from '@/renderer/hooks/mcp/catalog';
 import { emitter } from '@/renderer/utils/emitter';
 import { updateWorkspaceTime } from '@/renderer/utils/workspace/workspaceHistory';
-import { Message } from '@arco-design/web-react';
+import { Checkbox, Message, Modal } from '@arco-design/web-react';
+import React from 'react';
 import { useCallback, useRef } from 'react';
 import { type TFunction } from 'i18next';
 import type { NavigateFunction } from 'react-router-dom';
 import { mutate as swrMutate } from 'swr';
 import { getConversationCreateErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
+import { isWslRuntime } from '@/renderer/utils/model/agentTypes';
 import type { AcpModelInfo, AvailableAgent, EffectiveAgentInfo } from '../types';
 import { getPreferredThoughtLevel } from './agentSelectionUtils';
+
+const WSL_FIRST_LAUNCH_STORAGE_PREFIX = 'aionui.guid.wslFirstLaunchConfirmed.';
+
+const isWslRuntimeAgent = (agent: AvailableAgent | undefined): boolean => {
+  return agent?.runtime?.kind === 'wsl' || Boolean(agent?.runtime_scope_id?.startsWith('wsl:'));
+};
+
+const getWslDistroName = (agent: AvailableAgent): string => {
+  return (
+    (isWslRuntime(agent.runtime) ? agent.runtime.distro : undefined) ||
+    agent.runtime_display_name ||
+    agent.runtime_scope_id?.replace(/^wsl:/, '') ||
+    agent.name
+  );
+};
+
+const getWslFirstLaunchStorageKey = (agent: AvailableAgent): string => {
+  return `${WSL_FIRST_LAUNCH_STORAGE_PREFIX}${agent.runtime_scope_id || getWslDistroName(agent)}`;
+};
+
+const safeReadLocalStorage = (key: string): string | null => {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+
+const safeWriteLocalStorage = (key: string, value: string): void => {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Local storage can be unavailable in hardened browser contexts.
+  }
+};
+
+const toWslDisplayPath = (workspace: string): string | undefined => {
+  const trimmed = workspace.trim();
+  if (!trimmed) return undefined;
+  const windowsMatch = /^([a-zA-Z]):[\\/](.*)$/.exec(trimmed);
+  if (!windowsMatch) return trimmed;
+  const drive = windowsMatch[1].toLowerCase();
+  const rest = windowsMatch[2].replace(/\\/g, '/');
+  return `/mnt/${drive}/${rest}`;
+};
+
+const toWindowsDisplayPath = (workspace: string): string | undefined => {
+  const trimmed = workspace.trim();
+  if (!trimmed) return undefined;
+  if (/^[a-zA-Z]:[\\/]/.test(trimmed)) return trimmed;
+  const wslMatch = /^\/mnt\/([a-zA-Z])\/(.*)$/.exec(trimmed);
+  if (!wslMatch) return undefined;
+  const drive = wslMatch[1].toUpperCase();
+  const rest = wslMatch[2].replace(/\//g, '\\');
+  return `${drive}:\\${rest}`;
+};
+
+const createWslFirstLaunchContent = (
+  agent: AvailableAgent,
+  workspace: string,
+  remember: (checked: boolean) => void,
+  t: TFunction
+): React.ReactNode => {
+  const distro = getWslDistroName(agent);
+  const wslPath = toWslDisplayPath(workspace) || t('guid.wslFirstLaunch.workspaceNotSelected');
+  const windowsPath = toWindowsDisplayPath(workspace) || t('guid.wslFirstLaunch.hostPathUnavailable');
+
+  return React.createElement(
+    'div',
+    { className: 'flex flex-col gap-3 text-sm' },
+    React.createElement('div', { key: 'summary' }, t('guid.wslFirstLaunch.summary', { agent: agent.name, distro })),
+    React.createElement(
+      'div',
+      { key: 'wsl-path' },
+      React.createElement('div', { className: 'text-xs text-color-3' }, t('guid.wslFirstLaunch.agentWorkspace')),
+      React.createElement('div', { className: 'font-mono break-all' }, wslPath)
+    ),
+    React.createElement(
+      'div',
+      { key: 'host-path' },
+      React.createElement('div', { className: 'text-xs text-color-3' }, t('guid.wslFirstLaunch.windowsPath')),
+      React.createElement('div', { className: 'font-mono break-all' }, windowsPath)
+    ),
+    React.createElement(
+      'div',
+      { key: 'notice', className: 'text-color-2' },
+      t('guid.wslFirstLaunch.notice', { distro })
+    ),
+    React.createElement(
+      Checkbox,
+      {
+        key: 'remember',
+        onChange: (checked: boolean) => remember(checked),
+      },
+      t('guid.wslFirstLaunch.rememberDistro', { distro })
+    )
+  );
+};
+
+const confirmWslFirstLaunchIfNeeded = async (
+  agent: AvailableAgent | undefined,
+  workspace: string,
+  t: TFunction
+): Promise<boolean> => {
+  if (!isWslRuntimeAgent(agent)) return true;
+  const storageKey = getWslFirstLaunchStorageKey(agent);
+  if (safeReadLocalStorage(storageKey) === 'true') return true;
+
+  let rememberDistro = false;
+  return new Promise((resolve) => {
+    Modal.confirm({
+      title: t('guid.wslFirstLaunch.title', {
+        agent: agent.name,
+        distro: getWslDistroName(agent),
+      }),
+      content: createWslFirstLaunchContent(
+        agent,
+        workspace,
+        (checked) => {
+          rememberDistro = checked;
+        },
+        t
+      ),
+      okText: t('guid.wslFirstLaunch.continue'),
+      cancelText: t('common.cancel'),
+      onOk: () => {
+        if (rememberDistro) {
+          safeWriteLocalStorage(storageKey, 'true');
+        }
+        resolve(true);
+      },
+      onCancel: () => {
+        resolve(false);
+      },
+    });
+  });
+};
 
 export type GuidSendDeps = {
   // Input state
@@ -74,7 +213,7 @@ export type GuidSendDeps = {
 };
 
 export type GuidSendResult = {
-  handleSend: () => Promise<void>;
+  handleSend: () => Promise<boolean>;
   sendMessageHandler: () => void;
   isButtonDisabled: boolean;
 };
@@ -189,7 +328,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     if (selectedAgent === 'aionrs' || (is_preset && finalEffectiveAgentType === 'aionrs')) {
       if (!current_model) {
         Message.warning(t('conversation.noModelConfigured'));
-        return;
+        return false;
       }
       try {
         const conversation = await ipcBridge.conversation.create.invoke({
@@ -219,7 +358,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
 
         if (!conversation || !conversation.id) {
           Message.error(t('conversation.createFailed'));
-          return;
+          return false;
         }
 
         if (isCustomWorkspace) {
@@ -242,11 +381,11 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         sessionStorage.setItem(`aionrs_initial_message_${conversation.id}`, JSON.stringify(initialMessage));
 
         await navigate(`/conversation/${conversation.id}`);
+        return true;
       } catch (error: unknown) {
         console.error('Failed to create Aion CLI conversation:', error);
         throw error;
       }
-      return;
     }
 
     // Remaining agent path (ACP/remote/custom, including preset fallbacks)
@@ -269,6 +408,9 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       if (!acpAgentInfo && !is_preset) {
         console.warn(`${acpBackend} CLI not found, but proceeding to let conversation panel handle it.`);
       }
+      const shouldContinue = await confirmWslFirstLaunchIfNeeded(acpAgentInfo, finalWorkspace, t);
+      if (!shouldContinue) return false;
+
       const agentBackend = acpBackend || selectedAgent;
       const preferredThoughtLevel = getPreferredThoughtLevel(agentBackend);
       const agentConversationParams = buildAgentConversationParams({
@@ -294,6 +436,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         assistant_conversation_overrides: assistantOverrides,
         extra: {
           default_files: files,
+          ...(acpAgentInfo?.runtime_scope_id ? { runtime_scope_id: acpAgentInfo.runtime_scope_id } : {}),
           ...(!is_preset && enabled_skills_to_send?.length ? { enabled_skills: enabled_skills_to_send } : {}),
           ...(!is_preset && excludeBuiltinSkills?.length ? { exclude_builtin_skills: excludeBuiltinSkills } : {}),
           selected_mcp_server_ids: selectedUserMcpServerIdsToSend,
@@ -306,7 +449,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         const conversation = await ipcBridge.conversation.create.invoke(agentConversationParams);
         if (!conversation || !conversation.id) {
           console.error('Failed to create ACP conversation - conversation object is null or missing id');
-          return;
+          return false;
         }
 
         if (isCustomWorkspace) {
@@ -329,6 +472,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         sessionStorage.setItem(`acp_initial_message_${conversation.id}`, JSON.stringify(initialMessage));
 
         await navigate(`/conversation/${conversation.id}`);
+        return true;
       } catch (error: unknown) {
         console.error('Failed to create ACP conversation:', error);
         throw error;
@@ -367,7 +511,8 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     sendingRef.current = true;
     setLoading(true);
     handleSend()
-      .then(() => {
+      .then((created) => {
+        if (!created) return;
         setInput('');
         setMentionOpen(false);
         setMentionQuery(null);

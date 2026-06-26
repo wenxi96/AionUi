@@ -9,7 +9,9 @@ import { ipcBridge } from '@/common';
 import { getAgents } from '@/renderer/hooks/agent/useAgents';
 
 export type AgentCheckResult = {
+  id?: string;
   backend: string;
+  runtime_scope_id?: string;
   name: string;
   available: boolean;
   latency?: number;
@@ -37,6 +39,9 @@ export type AgentReadinessState = {
 type UseAgentReadinessCheckOptions = {
   // The backend type to check (for ACP conversations)
   backend?: string;
+  // Optional row identity for runtime-scoped rows with the same backend.
+  agent_id?: string;
+  runtime_scope_id?: string;
   // Conversation type ('acp' or 'codex')
   conversation_type: 'acp' | 'codex';
   // Whether to auto-check on mount
@@ -64,7 +69,7 @@ const AGENT_NAMES: Partial<Record<string, string>> = {
  * and recommend available alternatives.
  */
 export function useAgentReadinessCheck(options: UseAgentReadinessCheckOptions) {
-  const { backend, conversation_type, autoCheck = false, onAgentReady } = options;
+  const { backend, agent_id, runtime_scope_id, conversation_type, autoCheck = false, onAgentReady } = options;
 
   const [state, setState] = useState<AgentReadinessState>({
     isReady: true, // Assume ready until proven otherwise
@@ -89,6 +94,8 @@ export function useAgentReadinessCheck(options: UseAgentReadinessCheckOptions) {
     try {
       const result = await ipcBridge.acpConversation.checkAgentHealth.invoke({
         backend: agentToCheck,
+        ...(agent_id ? { agent_id } : {}),
+        ...(runtime_scope_id ? { runtime_scope_id } : {}),
       });
 
       if (result.available) {
@@ -117,7 +124,7 @@ export function useAgentReadinessCheck(options: UseAgentReadinessCheckOptions) {
       }));
       return false;
     }
-  }, [backend, conversation_type]);
+  }, [backend, agent_id, runtime_scope_id, conversation_type]);
 
   // Find available alternative agents
   const findAlternatives = useCallback(async () => {
@@ -141,18 +148,23 @@ export function useAgentReadinessCheck(options: UseAgentReadinessCheckOptions) {
         return;
       }
 
-      // Filter out current agent and remote agents (local-only health check)
+      // Filter out current row and remote agents (local-only health check).
+      // If a row id is available, do not exclude other rows that share backend
+      // but differ by runtime scope, such as native vs WSL variants.
       const agentsToCheck = agentsList
         .filter(
           (agent) =>
             agent.agent_type !== 'remote' &&
-            agent.backend !== currentAgentBackend &&
-            agent.agent_type !== currentAgentBackend
+            (agent_id
+              ? agent.id !== agent_id
+              : agent.backend !== currentAgentBackend && agent.agent_type !== currentAgentBackend)
         )
         .map((agent) => {
           const backendKey = (agent.backend || agent.agent_type) as string;
           return {
+            id: agent.id,
             backend: backendKey,
+            runtime_scope_id: agent.runtime_scope_id,
             name: AGENT_NAMES[backendKey] || agent.name,
             available: false,
             checking: true,
@@ -186,6 +198,8 @@ export function useAgentReadinessCheck(options: UseAgentReadinessCheckOptions) {
         try {
           const healthResult = await ipcBridge.acpConversation.checkAgentHealth.invoke({
             backend: agent.backend,
+            agent_id: agent.id,
+            runtime_scope_id: agent.runtime_scope_id,
           });
           const latency = Date.now() - startTime;
 

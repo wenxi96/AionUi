@@ -11,6 +11,7 @@
  *
  * Environment variables:
  *  - AIONUI_BACKEND_RUN_ID: AionCore Manual Build workflow run id
+ *  - AIONUI_BACKEND_REPOSITORY: owner/repo for the AionCore run or release
  *  - AIONUI_BACKEND_VERSION: override the pinned version
  *  - AIONUI_BACKEND_ARCH: target architecture (default: process.arch)
  *  - GH_TOKEN / GITHUB_TOKEN: GitHub API token (for rate limiting)

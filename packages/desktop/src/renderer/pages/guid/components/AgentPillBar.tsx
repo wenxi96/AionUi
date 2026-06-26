@@ -25,6 +25,7 @@ type AgentPillBarProps = {
     backend?: string;
     id?: string;
     custom_agent_id?: string;
+    runtime_scope_id?: string;
   }) => string;
   onSelectAgent: (key: string) => void;
   suppressSelectionAnimation?: boolean;
@@ -92,7 +93,10 @@ const AgentPillBar: React.FC<AgentPillBarProps> = ({
                   data-testid={`agent-pill-${agent.backend}`}
                   data-agent-pill='true'
                   data-agent-key={getAgentKey(agent)}
+                  data-agent-backend={agent.backend || agent.agent_type}
                   data-agent-type={agent.agent_type}
+                  data-runtime-kind={agent.runtime?.kind}
+                  data-runtime-scope-id={agent.runtime_scope_id}
                   data-agent-selected={isSelected ? 'true' : 'false'}
                   className={`group relative flex items-center cursor-pointer whitespace-nowrap overflow-hidden ${isSelected ? `opacity-100 px-12px py-8px rd-20px mx-2px ${styles.agentItemSelected}` : isMobile ? 'opacity-70 p-4px' : 'opacity-60 p-4px hover:opacity-100'}`}
                   style={

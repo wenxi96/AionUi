@@ -215,3 +215,16 @@ graphify-out/
 .graphify_python
 
 .snow/
+
+# Agents workspace disposable artifacts
+/.agents/scratch/**
+!/.agents/scratch/
+!/.agents/scratch/.gitkeep
+
+/.agents/workers/**
+!/.agents/workers/
+!/.agents/workers/.gitkeep
+
+/.agents/**/.pytest_cache/
+/.agents/**/__pycache__/
+/.agents/**/*.tmp

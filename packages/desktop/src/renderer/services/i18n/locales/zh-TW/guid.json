@@ -9,6 +9,17 @@
   "selectAssistantHint": "選擇一位助手開始任務",
   "agentSwitcherLabel": "Agent",
   "switchedToAgent": "已切換到 {{agent}}",
+  "wslFirstLaunch": {
+    "title": "透過 WSL {{distro}} 啟動 {{agent}}？",
+    "summary": "你將透過 WSL {{distro}} 啟動 {{agent}}。",
+    "agentWorkspace": "Agent 工作目錄",
+    "windowsPath": "Windows 路徑",
+    "notice": "此 Agent 會在 WSL {{distro}} 中執行，可能存取 WSL 檔案系統以及 /mnt/c 下的 Windows 檔案。",
+    "rememberDistro": "不再提醒此 distro：{{distro}}",
+    "continue": "繼續",
+    "workspaceNotSelected": "未選擇專案工作目錄",
+    "hostPathUnavailable": "Windows 路徑不可用"
+  },
   "workspace": {
     "workInProject": "在專案中工作",
     "optional": "可選",

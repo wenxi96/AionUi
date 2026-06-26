@@ -53,7 +53,9 @@ export function getJobAgentMeta(
 
   if (rawType === 'acp') {
     const backend = config?.backend;
-    const detected = backend ? cliAgents.find((a) => (a.backend || a.agent_type) === backend) : undefined;
+    const detected =
+      (config?.agent_id ? cliAgents.find((a) => a.id === config.agent_id) : undefined) ??
+      (backend ? cliAgents.find((a) => (a.backend || a.agent_type) === backend) : undefined);
     return {
       name: detected?.name || config?.name || backend || rawType,
       logo: getAgentLogo(backend),

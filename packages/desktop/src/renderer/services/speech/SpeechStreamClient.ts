@@ -92,7 +92,14 @@ type ServerFrame = {
  */
 const getBackendPort = (): number => {
   if (typeof window !== 'undefined') {
-    const w = window as Window & { __backendPort?: number };
+    const w = window as Window & {
+      __backendPort?: number;
+      __backendPortState?: {
+        getPort: () => number;
+      };
+    };
+    const dynamicPort = w.__backendPortState?.getPort?.();
+    if (dynamicPort && dynamicPort > 0) return dynamicPort;
     if (w.__backendPort) return w.__backendPort;
   }
   const g = globalThis as typeof globalThis & { __backendPort?: number };
@@ -102,6 +109,14 @@ const getBackendPort = (): number => {
 const isWebUiBrowserMode = (): boolean =>
   typeof window !== 'undefined' &&
   typeof document !== 'undefined' &&
+  !(
+    window as Window & {
+      __backendPort?: number;
+      __backendPortState?: {
+        getPort: () => number;
+      };
+    }
+  ).__backendPortState?.getPort?.() &&
   !(window as Window & { __backendPort?: number }).__backendPort;
 
 /** Resolve the streaming endpoint URL for the current runtime mode. */

@@ -13,6 +13,9 @@
 declare global {
   interface Window {
     __backendPort?: number;
+    __backendPortState?: {
+      getPort: () => number;
+    };
   }
 }
 
@@ -33,6 +36,10 @@ declare global {
  *   will still fail cleanly with ECONNREFUSED rather than masking the bug.
  */
 function getBackendPort(): number {
+  if (typeof window !== 'undefined' && window.__backendPortState?.getPort) {
+    const port = window.__backendPortState.getPort();
+    if (port > 0) return port;
+  }
   if (typeof window !== 'undefined' && (window as Window).__backendPort) {
     return (window as Window).__backendPort as number;
   }
@@ -46,7 +53,12 @@ function getBackendPort(): number {
  * proxy / WS upgrade to the backend.
  */
 function isWebUiBrowserMode(): boolean {
-  return typeof window !== 'undefined' && typeof document !== 'undefined' && !(window as Window).__backendPort;
+  return (
+    typeof window !== 'undefined' &&
+    typeof document !== 'undefined' &&
+    !window.__backendPortState?.getPort?.() &&
+    !(window as Window).__backendPort
+  );
 }
 
 export function getBaseUrl(): string {

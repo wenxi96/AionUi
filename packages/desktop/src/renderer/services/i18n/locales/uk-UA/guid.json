@@ -9,6 +9,17 @@
   "selectAssistantHint": "Виберіть асистента, щоб розпочати завдання",
   "agentSwitcherLabel": "Агент",
   "switchedToAgent": "Переключено на {{agent}}",
+  "wslFirstLaunch": {
+    "title": "Start {{agent}} in WSL {{distro}}?",
+    "summary": "You will start {{agent}} through WSL {{distro}}.",
+    "agentWorkspace": "Agent workspace",
+    "windowsPath": "Windows path",
+    "notice": "This agent runs inside WSL {{distro}} and may access the WSL file system and Windows files under /mnt/c.",
+    "rememberDistro": "Do not remind me again for {{distro}}",
+    "continue": "Continue",
+    "workspaceNotSelected": "No project workspace selected",
+    "hostPathUnavailable": "Windows path unavailable"
+  },
   "workspace": {
     "workInProject": "Працювати в проєкті",
     "optional": "Необов'язково",

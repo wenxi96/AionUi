@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Assistant } from '@/common/types/agent/assistantTypes';
 import { resolveCronAgentConfig } from '@/renderer/pages/cron/ScheduledTasksPage/resolveCronAgentConfig';
+import type { AgentMetadata } from '@/renderer/utils/model/agentTypes';
 
 describe('resolveCronAgentConfig', () => {
   it('stores provider id for preset aionrs assistants instead of literal aionrs backend', () => {
@@ -78,6 +79,50 @@ describe('resolveCronAgentConfig', () => {
       },
     });
   });
+
+  it('resolves CLI agents by id when native and WSL rows share a backend', () => {
+    const result = resolveCronAgentConfig({
+      agentValue: 'cli:qwen-wsl-ubuntu',
+      conversationAgentType: 'acp',
+      cliAgents: [
+        cliAgent({ id: 'qwen-native', name: 'Qwen', backend: 'qwen' }),
+        cliAgent({
+          id: 'qwen-wsl-ubuntu',
+          name: 'Qwen (Ubuntu)',
+          backend: 'qwen',
+          runtime: {
+            kind: 'wsl',
+            distro: 'Ubuntu',
+            version: 2,
+            state: 'Running',
+            cliPath: '/usr/bin/qwen',
+          },
+          runtime_scope_id: 'wsl:Ubuntu',
+          runtime_display_name: 'Ubuntu',
+        }),
+      ],
+      presetAssistants: [],
+      config_options: { profile: 'work' },
+      workspace: '/tmp/project',
+      getMode: (backend) => (backend === 'qwen' ? 'yolo' : undefined),
+      aionrsModelRequiredMessage: 'provider required',
+    });
+
+    expect(result).toEqual({
+      resolvedAgentType: 'acp',
+      agent_config: {
+        backend: 'qwen',
+        name: 'Qwen (Ubuntu)',
+        agent_id: 'qwen-wsl-ubuntu',
+        runtime_scope_id: 'wsl:Ubuntu',
+        custom_agent_id: 'qwen-wsl-ubuntu',
+        mode: 'yolo',
+        model_id: undefined,
+        config_options: { profile: 'work' },
+        workspace: '/tmp/project',
+      },
+    });
+  });
 });
 
 function assistant(overrides: Pick<Assistant, 'id' | 'name' | 'preset_agent_type'>): Assistant {
@@ -97,5 +142,18 @@ function assistant(overrides: Pick<Assistant, 'id' | 'name' | 'preset_agent_type
     prompts: [],
     prompts_i18n: {},
     models: [],
+  };
+}
+
+function cliAgent(overrides: Pick<AgentMetadata, 'id' | 'name' | 'backend'> & Partial<AgentMetadata>): AgentMetadata {
+  return {
+    id: overrides.id,
+    name: overrides.name,
+    backend: overrides.backend,
+    agent_type: overrides.agent_type ?? 'acp',
+    agent_source: overrides.agent_source ?? 'builtin',
+    enabled: true,
+    available: true,
+    ...overrides,
   };
 }

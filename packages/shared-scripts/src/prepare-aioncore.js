@@ -18,8 +18,23 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const GITHUB_OWNER = 'iOfficeAI';
-const GITHUB_REPO = 'AionCore';
+const DEFAULT_GITHUB_OWNER = 'iOfficeAI';
+const DEFAULT_GITHUB_REPO = 'AionCore';
+
+function resolveGitHubRepository() {
+  const raw = (process.env.AIONUI_BACKEND_REPOSITORY || `${DEFAULT_GITHUB_OWNER}/${DEFAULT_GITHUB_REPO}`).trim();
+  const normalized = raw
+    .replace(/^https:\/\/github\.com\//i, '')
+    .replace(/^git@github\.com:/i, '')
+    .replace(/\.git$/i, '');
+  const [owner, repo, ...extra] = normalized.split('/').filter(Boolean);
+  if (!owner || !repo || extra.length > 0) {
+    throw new Error(`Invalid AIONUI_BACKEND_REPOSITORY value: ${raw}. Expected owner/repo.`);
+  }
+  return { owner, repo };
+}
+
+const { owner: GITHUB_OWNER, repo: GITHUB_REPO } = resolveGitHubRepository();
 
 const ACTIONS_ARTIFACT_TARGETS = {
   'darwin-arm64': {

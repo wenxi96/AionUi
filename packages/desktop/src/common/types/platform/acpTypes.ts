@@ -257,9 +257,20 @@ export interface AcpPermissionOption {
   kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
 }
 
+export interface AcpPermissionRuntimeContext {
+  runtime_kind: 'wsl' | string;
+  runtime_scope_id?: string;
+  runtime_display_name?: string;
+  distro?: string;
+  agent_path?: string;
+  workspace_host_path: string;
+  workspace_runtime_path: string;
+}
+
 export interface AcpPermissionRequest {
   session_id: string;
   options: Array<AcpPermissionOption>;
+  runtime_context?: AcpPermissionRuntimeContext;
   tool_call: {
     tool_call_id: string;
     raw_input?: {

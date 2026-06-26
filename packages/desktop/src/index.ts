@@ -279,6 +279,11 @@ function exposeBackendPort(backendPort: number): void {
   // ipcBridge.* invoke from the main process — the renderer side reads
   // window.__backendPort via preload, but main has no `window`.
   (globalThis as typeof globalThis & { __backendPort?: number }).__backendPort = backendPort;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('backend-port-ready', backendPort);
+    }
+  }
 }
 
 function ensureAdminUserOnce(backendPort: number): Promise<void> {

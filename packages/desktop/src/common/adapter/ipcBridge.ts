@@ -760,6 +760,11 @@ export const mode = {
 // ACP Conversation — routed to /api/agents/* + conversation routes
 // ---------------------------------------------------------------------------
 
+export type WslRuntimeSettings = {
+  enabled: boolean;
+  supported?: boolean;
+};
+
 export const acpConversation = {
   sendMessage: conversation.sendMessage,
   responseStream: conversation.responseStream,
@@ -773,6 +778,10 @@ export const acpConversation = {
    */
   getManagedAgents: httpGet<AgentMetadata[], void>('/api/agents?include_disabled=true'),
   refreshCustomAgents: httpPost<void, void>('/api/agents/refresh'),
+  getWslRuntimeSettings: httpGet<WslRuntimeSettings, void>('/api/agents/runtime/wsl'),
+  updateWslRuntimeSettings: httpPatch<WslRuntimeSettings, { enabled: boolean }>('/api/agents/runtime/wsl', (p) => ({
+    enabled: p.enabled,
+  })),
   testCustomAgent: httpPost<
     { step: 'success' } | { step: 'fail_cli'; error: string } | { step: 'fail_acp'; error: string },
     { command: string; acp_args?: string[]; env?: Record<string, string>; runtime_scope_id?: string }
@@ -821,9 +830,10 @@ export const acpConversation = {
     (p) => `/api/agents/${p.id}/enabled`,
     (p) => ({ enabled: p.enabled })
   ),
-  checkAgentHealth: httpPost<{ available: boolean; latency?: number; error?: string }, { backend: string }>(
-    '/api/agents/health-check'
-  ),
+  checkAgentHealth: httpPost<
+    { available: boolean; latency?: number; error?: string },
+    { backend: string; agent_id?: string; runtime_scope_id?: string }
+  >('/api/agents/health-check'),
   checkProviderHealth: httpPost<ProviderHealthCheckResponse, ProviderHealthCheckRequest>(
     '/api/agents/provider-health-check'
   ),
@@ -1324,6 +1334,8 @@ export interface ICronJob {
 export interface ICronAgentConfig {
   backend: string;
   name: string;
+  agent_id?: string;
+  runtime_scope_id?: string;
   cli_path?: string;
   is_preset?: boolean;
   custom_agent_id?: string;

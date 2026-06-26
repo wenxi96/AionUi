@@ -50,13 +50,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('feedback:renderer-log', payload),
 });
 
-// Synchronously fetch the aioncore port and expose it to the renderer
-// via contextBridge (direct window assignment is invisible under contextIsolation).
-const backendPort = ipcRenderer.sendSync('get-backend-port') as number;
+// Synchronously fetch the aioncore port and expose it to the renderer via
+// contextBridge. The backend can still be health-pending when preload runs, so
+// keep a live getter and update it when main later announces readiness.
+let backendPort = ipcRenderer.sendSync('get-backend-port') as number;
+backendPort = backendPort > 0 ? backendPort : 0;
+ipcRenderer.on('backend-port-ready', (_event, port: unknown) => {
+  if (typeof port === 'number' && port > 0) {
+    backendPort = port;
+  }
+});
 const initialLanguage = ipcRenderer.sendSync('get-initial-language') as string | null;
 const backendStartupFailed = ipcRenderer.sendSync('get-backend-startup-failed') as boolean;
 const backendStartupFailure = ipcRenderer.sendSync('get-backend-startup-failure') as unknown;
-contextBridge.exposeInMainWorld('__backendPort', backendPort > 0 ? backendPort : 0);
+contextBridge.exposeInMainWorld('__backendPort', backendPort);
+contextBridge.exposeInMainWorld('__backendPortState', {
+  getPort: () => backendPort,
+});
 contextBridge.exposeInMainWorld('__initialLanguage', initialLanguage ?? null);
 contextBridge.exposeInMainWorld('__aionuiE2ETest', process.env.AIONUI_E2E_TEST === '1');
 contextBridge.exposeInMainWorld('__backendStartupFailed', backendStartupFailed === true);

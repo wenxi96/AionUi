@@ -5,7 +5,7 @@
  */
 
 import type { AcpModelInfo } from '@/common/types/platform/acpTypes';
-import type { AgentSource } from '@/renderer/utils/model/agentTypes';
+import type { AgentRuntimeWireMetadata, AgentSource } from '@/renderer/utils/model/agentTypes';
 
 /**
  * Available agent entry returned by the backend.
@@ -14,15 +14,19 @@ import type { AgentSource } from '@/renderer/utils/model/agentTypes';
  */
 export type AvailableAgent = {
   /**
-   * Stable identity. For `agent_source === 'custom'` or `agent_type === 'remote'`
-   * this is the row id that discriminates between rows with the same
-   * `agent_type` / `backend`. Canonical field for agent selection going
-   * forward — prefer `id` over `custom_agent_id`.
+   * Stable identity. For `agent_source === 'custom'`, `agent_type === 'remote'`,
+   * or runtime-scoped rows (for example WSL), this is the row id that
+   * discriminates between rows with the same `agent_type` / `backend`.
+   * Canonical field for agent selection going forward — prefer `id` over
+   * `custom_agent_id`.
    */
   id?: string;
   agent_type: string;
   agent_source?: AgentSource;
   backend?: string;
+  runtime?: AgentRuntimeWireMetadata;
+  runtime_scope_id?: string;
+  runtime_display_name?: string;
   icon?: string;
   name: string;
   cli_path?: string;

@@ -56,7 +56,9 @@ export function resolveCronAgentConfig(input: ResolveCronAgentConfigInput): Reso
   );
 
   if (agentKind === 'cli') {
-    const agent = cliAgents.find((item) => item.backend === agentId || item.agent_type === agentId);
+    const agent =
+      cliAgents.find((item) => item.id === agentId) ??
+      cliAgents.find((item) => item.backend === agentId || item.agent_type === agentId);
     const backend = (agent?.backend || agent?.agent_type || agentId) as string;
 
     if (backend === 'aionrs') {
@@ -77,6 +79,9 @@ export function resolveCronAgentConfig(input: ResolveCronAgentConfigInput): Reso
       agent_config = {
         backend,
         name: agent.name || capitalizedBackend,
+        agent_id: agent.id,
+        runtime_scope_id: agent.runtime_scope_id,
+        custom_agent_id: agent.id,
         mode: getMode(backend),
         model_id,
         config_options,

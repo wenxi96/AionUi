@@ -35,6 +35,11 @@ on:
         required: false
         type: string
         default: ''
+      aioncore_repository:
+        description: 'Optional AionCore repository owner/name for the manual build run'
+        required: false
+        type: string
+        default: ''
 
 env:
   BUN_INSTALL_REGISTRY: 'https://registry.npmjs.org/'
@@ -88,6 +93,7 @@ jobs:
       ref: ${{ inputs.branch }}
       skip_code_quality: ${{ inputs.skip_code_quality }}
       aioncore_run_id: ${{ inputs.aioncore_run_id }}
+      aioncore_repository: ${{ inputs.aioncore_repository }}
       append_commit_hash: true
       upload_installers_only: true
     secrets: inherit

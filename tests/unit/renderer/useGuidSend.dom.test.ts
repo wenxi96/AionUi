@@ -4,13 +4,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IMcpServer } from '@/common/config/storage';
 import { useGuidSend, type GuidSendDeps } from '@/renderer/pages/guid/hooks/useGuidSend';
 
 const createConversationInvokeMock = vi.fn();
 const swrMutateMock = vi.fn();
+const modalConfirmMock = vi.fn();
 
 vi.mock('@/common', () => ({
   ipcBridge: {
@@ -37,9 +38,13 @@ vi.mock('@/renderer/utils/workspace/workspaceHistory', () => ({
 }));
 
 vi.mock('@arco-design/web-react', () => ({
+  Checkbox: 'Checkbox',
   Message: {
     warning: vi.fn(),
     error: vi.fn(),
+  },
+  Modal: {
+    confirm: (...args: unknown[]) => modalConfirmMock(...args),
   },
 }));
 
@@ -101,8 +106,10 @@ describe('useGuidSend', () => {
   beforeEach(() => {
     createConversationInvokeMock.mockReset();
     createConversationInvokeMock.mockResolvedValue({ id: 'conv-1' });
+    modalConfirmMock.mockReset();
     swrMutateMock.mockReset();
     swrMutateMock.mockResolvedValue(undefined);
+    window.localStorage.clear();
   });
 
   it('passes selected mode into assistant conversation overrides when creating a preset ACP conversation', async () => {
@@ -222,5 +229,182 @@ describe('useGuidSend', () => {
     expect(payload.assistant).toBeUndefined();
     expect(payload.extra.enabled_skills).toEqual(['pdf-reader']);
     expect(payload.extra.exclude_builtin_skills).toEqual(['todo-tracker']);
+  });
+
+  it('asks for confirmation before launching a WSL ACP agent and forwards runtime scope', async () => {
+    const deps = createDeps();
+    const wslAgent = {
+      id: 'codex:wsl:ubuntu-24-04',
+      key: 'codex:wsl:ubuntu-24-04',
+      name: 'Codex CLI (Ubuntu-24.04)',
+      agent_type: 'acp',
+      backend: 'codex',
+      is_preset: false,
+      isExtension: false,
+      runtime_scope_id: 'wsl:Ubuntu-24.04',
+      runtime_display_name: 'Ubuntu-24.04',
+      runtime: {
+        kind: 'wsl',
+        distro: 'Ubuntu-24.04',
+        version: 2,
+        state: 'Running',
+        cliPath: '/home/cheng/.nvm/versions/node/v24.15.0/bin/codex',
+        detectedAt: 1,
+        probeMode: 'user-shell',
+      },
+    } as never;
+    deps.selectedAgent = 'codex';
+    deps.selectedAgentKey = 'codex:wsl:ubuntu-24-04';
+    deps.selectedAgentInfo = wslAgent;
+    deps.is_presetAgent = false;
+    deps.current_model = { provider_id: 'openai', model: 'gpt-5', use_model: 'gpt-5' } as never;
+    deps.dir = 'C:\\Users\\cheng\\project';
+    deps.findAgentByKey = vi.fn(() => wslAgent);
+    deps.getEffectiveAgentType = vi.fn(() => ({
+      agent_type: 'codex',
+      isAvailable: true,
+      isFallback: false,
+      originalType: 'codex',
+    }));
+    modalConfirmMock.mockImplementation((config) => {
+      config.onOk();
+      return vi.fn();
+    });
+
+    const { result } = renderHook(() => useGuidSend(deps));
+
+    await act(async () => {
+      await result.current.handleSend();
+    });
+
+    expect(modalConfirmMock).toHaveBeenCalledTimes(1);
+    expect(createConversationInvokeMock).toHaveBeenCalledTimes(1);
+    const payload = createConversationInvokeMock.mock.calls[0][0];
+    expect(payload.extra.agent_id).toBe('codex:wsl:ubuntu-24-04');
+    expect(payload.extra.runtime_scope_id).toBe('wsl:Ubuntu-24.04');
+    expect(payload.extra.workspace).toBe('C:\\Users\\cheng\\project');
+  });
+
+  it('does not create a WSL ACP conversation when first-launch confirmation is cancelled', async () => {
+    const deps = createDeps();
+    deps.selectedAgent = 'codex';
+    deps.selectedAgentKey = 'codex:wsl:ubuntu-24-04';
+    deps.selectedAgentInfo = {
+      id: 'codex:wsl:ubuntu-24-04',
+      key: 'codex:wsl:ubuntu-24-04',
+      name: 'Codex CLI (Ubuntu-24.04)',
+      agent_type: 'acp',
+      backend: 'codex',
+      is_preset: false,
+      isExtension: false,
+      runtime_scope_id: 'wsl:Ubuntu-24.04',
+      runtime: { kind: 'wsl', distro: 'Ubuntu-24.04' },
+    } as never;
+    deps.current_model = { provider_id: 'openai', model: 'gpt-5', use_model: 'gpt-5' } as never;
+    deps.getEffectiveAgentType = vi.fn(() => ({
+      agent_type: 'codex',
+      isAvailable: true,
+      isFallback: false,
+      originalType: 'codex',
+    }));
+    modalConfirmMock.mockImplementation((config) => {
+      config.onCancel();
+      return vi.fn();
+    });
+
+    const { result } = renderHook(() => useGuidSend(deps));
+
+    await act(async () => {
+      await result.current.handleSend();
+    });
+
+    expect(modalConfirmMock).toHaveBeenCalledTimes(1);
+    expect(createConversationInvokeMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the prompt text when WSL first-launch confirmation is cancelled from send handler', async () => {
+    const deps = createDeps();
+    const setInput = vi.fn();
+    deps.setInput = setInput;
+    deps.selectedAgent = 'codex';
+    deps.selectedAgentKey = 'codex:wsl:ubuntu-24-04';
+    deps.selectedAgentInfo = {
+      id: 'codex:wsl:ubuntu-24-04',
+      key: 'codex:wsl:ubuntu-24-04',
+      name: 'Codex CLI (Ubuntu-24.04)',
+      agent_type: 'acp',
+      backend: 'codex',
+      is_preset: false,
+      isExtension: false,
+      runtime_scope_id: 'wsl:Ubuntu-24.04',
+      runtime: { kind: 'wsl', distro: 'Ubuntu-24.04' },
+    } as never;
+    deps.current_model = { provider_id: 'openai', model: 'gpt-5', use_model: 'gpt-5' } as never;
+    deps.getEffectiveAgentType = vi.fn(() => ({
+      agent_type: 'codex',
+      isAvailable: true,
+      isFallback: false,
+      originalType: 'codex',
+    }));
+    modalConfirmMock.mockImplementation((config) => {
+      config.onCancel();
+      return vi.fn();
+    });
+
+    const { result } = renderHook(() => useGuidSend(deps));
+
+    act(() => {
+      result.current.sendMessageHandler();
+    });
+
+    await waitFor(() => expect(modalConfirmMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(deps.setLoading).toHaveBeenLastCalledWith(false));
+    expect(createConversationInvokeMock).not.toHaveBeenCalled();
+    expect(setInput).not.toHaveBeenCalled();
+  });
+
+  it('remembers a confirmed WSL distro and skips later first-launch confirmation', async () => {
+    const deps = createDeps();
+    deps.selectedAgent = 'codex';
+    deps.selectedAgentKey = 'codex:wsl:Ubuntu';
+    deps.selectedAgentInfo = {
+      id: 'codex:wsl:Ubuntu',
+      key: 'codex:wsl:Ubuntu',
+      name: 'Codex CLI (Ubuntu)',
+      agent_type: 'acp',
+      backend: 'codex',
+      is_preset: false,
+      isExtension: false,
+      runtime_scope_id: 'wsl:Ubuntu',
+      runtime: { kind: 'wsl', distro: 'Ubuntu' },
+    } as never;
+    deps.current_model = { provider_id: 'openai', model: 'gpt-5', use_model: 'gpt-5' } as never;
+    deps.getEffectiveAgentType = vi.fn(() => ({
+      agent_type: 'codex',
+      isAvailable: true,
+      isFallback: false,
+      originalType: 'codex',
+    }));
+    modalConfirmMock.mockImplementation((config) => {
+      const checkbox = config.content.props.children.find((child: { type?: string }) => child.type === 'Checkbox');
+      checkbox.props.onChange(true);
+      config.onOk();
+      return vi.fn();
+    });
+
+    const first = renderHook(() => useGuidSend(deps));
+    await act(async () => {
+      await first.result.current.handleSend();
+    });
+
+    createConversationInvokeMock.mockClear();
+    const second = renderHook(() => useGuidSend(deps));
+    await act(async () => {
+      await second.result.current.handleSend();
+    });
+
+    expect(modalConfirmMock).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem('aionui.guid.wslFirstLaunchConfirmed.wsl:Ubuntu')).toBe('true');
+    expect(createConversationInvokeMock).toHaveBeenCalledTimes(1);
   });
 });

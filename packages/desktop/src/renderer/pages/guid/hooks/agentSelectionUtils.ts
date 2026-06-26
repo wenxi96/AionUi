@@ -69,9 +69,10 @@ export async function saveAionrsDefaultModel(provider_id: string, use_model: str
 /**
  * Get agent key for selection.
  *
- * Rows that are row-scoped (custom ACP / remote agents) use `agent.id` directly
- * as the key — no namespace prefix. Builtin / internal agents keep `backend` or
- * `agent_type` as the key since there is only one row per type.
+ * Rows that are row-scoped (custom ACP / remote agents / runtime-scoped rows
+ * such as WSL) use `agent.id` directly as the key — no namespace prefix.
+ * Builtin / internal agents keep `backend` or `agent_type` as the key when
+ * there is only one row per type.
  *
  * Note: preset *assistants* (not agents) still use a `custom:<assistantId>`
  * form produced inline by `AssistantSelectionArea`. That is a separate
@@ -83,9 +84,10 @@ export const getAgentKey = (agent: {
   agent_source?: AgentSource;
   backend?: string;
   id?: string;
+  runtime_scope_id?: string;
   is_preset?: boolean;
 }): string => {
-  const rowScoped = agent.agent_type === 'remote' || agent.agent_source === 'custom';
+  const rowScoped = agent.agent_type === 'remote' || agent.agent_source === 'custom' || Boolean(agent.runtime_scope_id);
   if (rowScoped && agent.id) return agent.id;
   return agent.backend || agent.agent_type;
 };

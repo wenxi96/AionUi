@@ -9,6 +9,17 @@
   "selectAssistantHint": "选择一位助手开始任务",
   "agentSwitcherLabel": "Agent",
   "switchedToAgent": "已切换到 {{agent}}",
+  "wslFirstLaunch": {
+    "title": "通过 WSL {{distro}} 启动 {{agent}}？",
+    "summary": "你将通过 WSL {{distro}} 启动 {{agent}}。",
+    "agentWorkspace": "Agent 工作目录",
+    "windowsPath": "Windows 路径",
+    "notice": "该 Agent 运行在 WSL {{distro}} 中，可能访问 WSL 文件系统和 /mnt/c 下的 Windows 文件。",
+    "rememberDistro": "不再提醒该 distro：{{distro}}",
+    "continue": "继续",
+    "workspaceNotSelected": "未选择项目工作目录",
+    "hostPathUnavailable": "Windows 路径不可用"
+  },
   "workspace": {
     "workInProject": "在项目中工作",
     "optional": "可选",

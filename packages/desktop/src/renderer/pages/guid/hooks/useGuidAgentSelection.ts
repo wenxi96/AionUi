@@ -50,6 +50,7 @@ export type GuidAgentSelectionResult = {
     backend?: string;
     id?: string;
     custom_agent_id?: string;
+    runtime_scope_id?: string;
   }) => string;
   findAgentByKey: (key: string) => AvailableAgent | undefined;
   resolvePresetRulesAndSkills: (
@@ -264,6 +265,7 @@ export const useGuidAgentSelection = ({
     if (selectedAgentKey.startsWith('custom:')) return 'custom';
     const info = availableAgents?.find((a) => a.id === selectedAgentKey);
     if (info?.agent_source === 'custom') return 'custom';
+    if (info?.runtime_scope_id) return info.backend || selectedAgentKey;
     return selectedAgentKey;
   })();
   const selectedAgentInfo = useMemo(() => {

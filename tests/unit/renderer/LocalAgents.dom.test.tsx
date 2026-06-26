@@ -9,8 +9,8 @@
  * derives the detected/custom sections from it.
  */
 
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 
 // t() echoes the key so section labels/buttons are assertable.
@@ -29,6 +29,11 @@ vi.mock('@renderer/hooks/agent/useAgents', () => ({
   useManagedAgents: () => useManagedAgents(),
 }));
 
+const bridgeMocks = vi.hoisted(() => ({
+  getWslRuntimeSettings: vi.fn().mockResolvedValue({ enabled: true, supported: true }),
+  updateWslRuntimeSettings: vi.fn().mockResolvedValue({ enabled: false, supported: true }),
+}));
+
 // Bridge is only touched by user-action handlers, not on render — stub the
 // shape the handlers reference so the import resolves.
 vi.mock('@/common', () => ({
@@ -38,6 +43,8 @@ vi.mock('@/common', () => ({
       updateCustomAgent: { invoke: vi.fn() },
       deleteCustomAgent: { invoke: vi.fn() },
       setAgentEnabled: { invoke: vi.fn() },
+      getWslRuntimeSettings: { invoke: bridgeMocks.getWslRuntimeSettings },
+      updateWslRuntimeSettings: { invoke: bridgeMocks.updateWslRuntimeSettings },
     },
   },
 }));
@@ -55,14 +62,36 @@ const makeAgents = () => [
   { id: 'custom-1', name: 'My Agent', agent_type: 'acp', agent_source: 'custom', command: 'sh', enabled: true },
 ];
 
+const makeAgentsWithWsl = () => [
+  ...makeAgents(),
+  {
+    id: 'acp-claude:wsl:ubuntu',
+    name: 'Claude Code (Ubuntu)',
+    agent_type: 'acp',
+    agent_source: 'builtin',
+    backend: 'claude',
+    runtime_scope_id: 'wsl:Ubuntu',
+    runtime_display_name: 'Ubuntu',
+    runtime: { kind: 'wsl', distro: 'Ubuntu' },
+    enabled: true,
+    available: true,
+  },
+];
+
 describe('LocalAgents', () => {
-  it('reads the managed-agents view and renders detected + custom sections', () => {
+  beforeEach(() => {
+    bridgeMocks.getWslRuntimeSettings.mockResolvedValue({ enabled: true, supported: true });
+    bridgeMocks.updateWslRuntimeSettings.mockResolvedValue({ enabled: false, supported: true });
+  });
+
+  it('reads the managed-agents view and renders detected + custom sections', async () => {
     useManagedAgents.mockReturnValue({ agents: makeAgents(), revalidate: vi.fn() });
 
     render(<LocalAgents />);
 
     // Proves L30 (useManagedAgents) ran and fed the derived lists.
     expect(useManagedAgents).toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByTestId('wsl-runtime-toggle-row')).toBeTruthy());
     expect(screen.getByText('Aion CLI')).toBeTruthy();
     expect(screen.getByText('Claude Code')).toBeTruthy();
     expect(screen.getByText('My Agent')).toBeTruthy();
@@ -74,5 +103,27 @@ describe('LocalAgents', () => {
     render(<LocalAgents />);
 
     expect(screen.getByText('settings.agentManagement.localAgentsEmpty')).toBeTruthy();
+  });
+
+  it('hides WSL diagnostics and WSL-derived rows on unsupported hosts', async () => {
+    bridgeMocks.getWslRuntimeSettings.mockResolvedValue({ enabled: false, supported: false });
+    useManagedAgents.mockReturnValue({ agents: makeAgentsWithWsl(), revalidate: vi.fn() });
+
+    render(<LocalAgents />);
+
+    await waitFor(() => expect(screen.queryByTestId('wsl-runtime-diagnostics')).toBeNull());
+    expect(screen.queryByText('Claude Code (Ubuntu)')).toBeNull();
+    expect(screen.getByText('Claude Code')).toBeTruthy();
+  });
+
+  it('hides WSL-derived rows while host support is still loading', () => {
+    bridgeMocks.getWslRuntimeSettings.mockReturnValue(new Promise(() => {}));
+    useManagedAgents.mockReturnValue({ agents: makeAgentsWithWsl(), revalidate: vi.fn() });
+
+    render(<LocalAgents />);
+
+    expect(screen.queryByTestId('wsl-runtime-diagnostics')).toBeNull();
+    expect(screen.queryByText('Claude Code (Ubuntu)')).toBeNull();
+    expect(screen.getByText('Claude Code')).toBeTruthy();
   });
 });

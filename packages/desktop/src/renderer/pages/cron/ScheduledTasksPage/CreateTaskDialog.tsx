@@ -11,7 +11,7 @@ import { Form, Input, Select, Message, TimePicker, Radio, Button } from '@arco-d
 import ModalWrapper from '@renderer/components/base/ModalWrapper';
 import { Down, Robot } from '@icon-park/react';
 import { ipcBridge } from '@/common';
-import type { ICreateCronJobParams, ICronAgentConfig, ICronJob } from '@/common/adapter/ipcBridge';
+import type { ICreateCronJobParams, ICronJob } from '@/common/adapter/ipcBridge';
 import { useConversationAgents } from '@renderer/pages/conversation/hooks/useConversationAgents';
 import { resolveAgentLogo } from '@renderer/utils/model/agentLogo';
 import dayjs from 'dayjs';
@@ -25,7 +25,6 @@ import { DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents, type AgentMetadata } from
 import { createCronSchedule } from '@renderer/pages/cron/cronUtils';
 import { getConversationCreateErrorMessage } from '@renderer/pages/conversation/utils/conversationCreateError';
 import { resolveAssistantAvatar } from '@renderer/utils/model/assistantAvatar';
-import { resolveSupportedConversationType } from '@renderer/utils/model/agentTypeSupportPolicy';
 import { resolveCronAgentConfig } from './resolveCronAgentConfig';
 
 const FormItem = Form.Item;
@@ -120,14 +119,23 @@ function getDescriptionInitialValue(job: ICronJob): string {
 /**
  * Infer the agent selection key from an ICronJob's agent_config.
  */
-function getAgentKeyFromJob(job: ICronJob, cliAgents: { backend?: string; agent_type: string }[]): string | undefined {
+function getAgentKeyFromJob(
+  job: ICronJob,
+  cliAgents: { id: string; backend?: string; agent_type: string }[]
+): string | undefined {
   const config = job.metadata.agent_config;
   if (config) {
     if (config.is_preset && config.custom_agent_id) return `preset:${config.custom_agent_id}`;
+    if (config.agent_id && cliAgents.some((a) => a.id === config.agent_id)) {
+      return `cli:${config.agent_id}`;
+    }
+    if (config.custom_agent_id && cliAgents.some((a) => a.id === config.custom_agent_id)) {
+      return `cli:${config.custom_agent_id}`;
+    }
     // For ACP agents config.backend is the vendor label (e.g. "claude");
     // for aionrs it's a provider hash — match against the agent list to decide.
     const matched = cliAgents.find((a) => (a.backend || a.agent_type) === config.backend);
-    if (matched) return `cli:${config.backend}`;
+    if (matched) return `cli:${matched.id}`;
   }
   if (job.metadata.agent_type) return `cli:${job.metadata.agent_type}`;
   return undefined;
@@ -145,7 +153,7 @@ const CreateTaskDialog: React.FC<CreateTaskDialogProps> = ({
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   const { cliAgents, presetAssistants } = useConversationAgents();
-  const { providers, getAvailableModels, formatModelLabel } = useModelProviderList();
+  const { providers, getAvailableModels } = useModelProviderList();
   const [frequency, setFrequency] = useState<FrequencyType>('manual');
   const [time, setTime] = useState('09:00');
   const [weekday, setWeekday] = useState('MON');
@@ -210,6 +218,15 @@ const CreateTaskDialog: React.FC<CreateTaskDialogProps> = ({
     }
   }, [visible, editJob, form]);
 
+  const selectedCliAgent = useMemo(() => {
+    if (!selectedAgent) return undefined;
+    const colonIdx = selectedAgent.indexOf(':');
+    const agentKind = selectedAgent.substring(0, colonIdx);
+    const agentId = selectedAgent.substring(colonIdx + 1);
+    if (agentKind !== 'cli') return undefined;
+    return cliAgents.find((a) => a.id === agentId);
+  }, [selectedAgent, cliAgents]);
+
   // Resolve backend from selectedAgent (handles both CLI and preset agents)
   const resolvedBackend = useMemo(() => {
     if (!selectedAgent) return undefined;
@@ -221,9 +238,8 @@ const CreateTaskDialog: React.FC<CreateTaskDialogProps> = ({
       const assistant = presetAssistants.find((a) => a.id === agentId);
       return assistant?.preset_agent_type;
     }
-    // CLI agent: agentId is the backend
-    return agentId;
-  }, [selectedAgent, presetAssistants]);
+    return selectedCliAgent?.backend || selectedCliAgent?.agent_type || agentId;
+  }, [selectedAgent, selectedCliAgent, presetAssistants]);
 
   const isGeminiMode = resolvedBackend === 'gemini' || resolvedBackend === 'aionrs';
 
@@ -281,10 +297,12 @@ const CreateTaskDialog: React.FC<CreateTaskDialogProps> = ({
   // ACP model info derived from the backend `/api/agents` handshake.
   const acpCachedModelInfo = useMemo<AcpModelInfo | null>(() => {
     if (!resolvedBackend || resolvedBackend === 'gemini' || resolvedBackend === 'aionrs') return null;
-    const matched = detectedAgents?.find((a) => (a.backend ?? a.agent_type) === resolvedBackend);
+    const matched = selectedCliAgent
+      ? detectedAgents?.find((a) => a.id === selectedCliAgent.id)
+      : detectedAgents?.find((a) => (a.backend ?? a.agent_type) === resolvedBackend);
     const info = matched?.handshake?.available_models as AcpModelInfo | undefined;
     return info?.available_models?.length ? info : null;
-  }, [resolvedBackend, detectedAgents]);
+  }, [resolvedBackend, selectedCliAgent, detectedAgents]);
 
   // Auto-pick the first available model from /api/providers when aionrs is
   // selected but none is set yet. Source of truth is the backend provider
@@ -490,7 +508,7 @@ const CreateTaskDialog: React.FC<CreateTaskDialogProps> = ({
                 let name = id;
                 let logo: React.ReactNode = <Robot size='16' />;
                 if (type === 'cli') {
-                  const agent = cliAgents.find((a) => (a.backend || a.agent_type) === id);
+                  const agent = cliAgents.find((a) => a.id === id);
                   if (agent) {
                     name = agent.name;
                     const logoSrc = resolveAgentLogo({
@@ -531,7 +549,7 @@ const CreateTaskDialog: React.FC<CreateTaskDialogProps> = ({
                     });
                     const disabled = agentKey === 'aionrs' && !hasAionrsProvider;
                     return (
-                      <Option key={`cli:${agentKey}`} value={`cli:${agentKey}`} disabled={disabled}>
+                      <Option key={`cli:${agent.id}`} value={`cli:${agent.id}`} disabled={disabled}>
                         <div
                           className='flex items-center gap-8px'
                           title={disabled ? t('cron.page.form.aionrsNoProvider') : undefined}

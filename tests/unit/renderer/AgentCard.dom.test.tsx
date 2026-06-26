@@ -14,7 +14,10 @@ import React from 'react';
 
 // Project convention: t() echoes the key so labels are assertable.
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (k: string) => k, i18n: { language: 'en' } }),
+  useTranslation: () => ({
+    t: (k: string, options?: Record<string, unknown>) => `${k}${options?.distro ?? ''}${options?.path ?? ''}`,
+    i18n: { language: 'en' },
+  }),
 }));
 
 import AgentCard from '@renderer/pages/settings/AgentSettings/AgentCard';
@@ -35,6 +38,48 @@ const renderCustom = (enabled: boolean, handlers: Partial<{ onToggle: (v: boolea
       onEdit={vi.fn()}
       onDelete={vi.fn()}
       onToggle={handlers.onToggle ?? vi.fn()}
+    />
+  );
+
+const renderDetectedWsl = () =>
+  render(
+    <AgentCard
+      type='detected'
+      agent={{
+        id: 'codex-wsl',
+        agent_type: 'acp',
+        agent_source: 'builtin',
+        name: 'Codex CLI (Ubuntu-24.04)',
+        backend: 'codex',
+        available: true,
+        enabled: true,
+        runtime_scope_id: 'wsl:Ubuntu-24.04',
+        runtime_display_name: 'Ubuntu-24.04',
+        runtime: {
+          kind: 'wsl',
+          distro: 'Ubuntu-24.04',
+          version: 2,
+          state: 'Running',
+          cliPath: '/home/cheng/.nvm/versions/node/v24.15.0/bin/codex',
+        },
+      }}
+      onGoToChat={vi.fn()}
+    />
+  );
+
+const renderDetectedWithLogo = (icon: string) =>
+  render(
+    <AgentCard
+      type='detected'
+      agent={{
+        id: 'codex-native',
+        agent_type: 'acp',
+        name: 'Codex CLI',
+        backend: 'codex',
+        icon,
+        available: true,
+      }}
+      onGoToChat={vi.fn()}
     />
   );
 
@@ -65,5 +110,33 @@ describe('AgentCard (custom variant)', () => {
     expect(toggle).toBeTruthy();
     fireEvent.click(toggle);
     expect(onToggle).toHaveBeenCalled();
+  });
+});
+
+describe('AgentCard (detected runtime metadata)', () => {
+  it('renders WSL runtime badge, distro state, and CLI path diagnostics', () => {
+    renderDetectedWsl();
+
+    expect(screen.getByTestId('agent-runtime-badge')).toHaveTextContent('settings.agentManagement.runtimeWsl');
+    expect(screen.getByTestId('agent-runtime-status')).toHaveTextContent('Running · WSL2');
+    expect(screen.getByTestId('agent-runtime-cli-path')).toHaveTextContent(
+      '/home/cheng/.nvm/versions/node/v24.15.0/bin/codex'
+    );
+  });
+
+  it('falls back when an image logo fails to load', () => {
+    renderDetectedWithLogo('/api/assets/logos/tools/coding/codex.svg');
+
+    const logo = screen.getByAltText('Codex CLI');
+    fireEvent.error(logo);
+
+    expect(screen.queryByAltText('Codex CLI')).toBeNull();
+  });
+
+  it('renders text icons directly instead of treating them as image URLs', () => {
+    renderDetectedWithLogo('🤖');
+
+    expect(screen.getByText('🤖')).toBeTruthy();
+    expect(screen.queryByAltText('Codex CLI')).toBeNull();
   });
 });

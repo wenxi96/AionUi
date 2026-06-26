@@ -6,6 +6,16 @@
 
 import { ipcBridge } from '@/common';
 
+import type { AgentRuntimeWireMetadata as RuntimeWireMetadata } from './agentRuntime';
+
+export {
+  isWslRuntime,
+  type AgentNativeRuntimeMetadata,
+  type AgentRuntimeWireMetadata,
+  type AgentUnknownRuntimeMetadata,
+  type AgentWslRuntimeMetadata,
+} from './agentRuntime';
+
 /** SWR key for agent metadata rows (from `/api/agents`). */
 export const DETECTED_AGENTS_SWR_KEY = 'agents.detected';
 
@@ -86,6 +96,9 @@ export type AgentMetadata = {
   agent_type: AgentType;
   agent_source: AgentSource;
   agent_source_info?: AgentSourceInfo;
+  runtime?: RuntimeWireMetadata;
+  runtime_scope_id?: string;
+  runtime_display_name?: string;
 
   enabled: boolean;
   /** True iff the backend resolved the spawn command on `$PATH` at hydrate time. */
