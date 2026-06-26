@@ -128,6 +128,10 @@ pub struct CronAgentConfig {
     pub backend: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_scope_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_preset: Option<bool>,
@@ -332,6 +336,8 @@ pub fn cron_job_to_response(job: &CronJob) -> CronJobResponse {
     let agent_config_dto = job.agent_config.as_ref().map(|c| CronAgentConfigDto {
         backend: c.backend.clone(),
         name: c.name.clone(),
+        agent_id: c.agent_id.clone(),
+        runtime_scope_id: c.runtime_scope_id.clone(),
         cli_path: c.cli_path.clone(),
         is_preset: c.is_preset,
         custom_agent_id: c.custom_agent_id.clone(),
@@ -585,6 +591,8 @@ mod tests {
             agent_config: Some(CronAgentConfig {
                 backend: "acp".into(),
                 name: "Claude".into(),
+                agent_id: None,
+                runtime_scope_id: None,
                 cli_path: None,
                 is_preset: None,
                 custom_agent_id: None,

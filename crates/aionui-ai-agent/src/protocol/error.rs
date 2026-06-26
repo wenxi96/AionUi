@@ -252,6 +252,8 @@ impl AcpError {
             ErrorCode::InvalidParams => {
                 if let Some(sid) = extract_session_not_found(err.data.as_ref()) {
                     AcpError::SessionNotFound { session_id: sid }
+                } else if is_auth_required_error(&err.message, err.data.as_ref()) {
+                    AcpError::AuthRequired
                 } else {
                     AcpError::InvalidParams { message: err.message }
                 }
@@ -259,6 +261,8 @@ impl AcpError {
             ErrorCode::ParseError | ErrorCode::InvalidRequest | ErrorCode::InternalError => {
                 if let Some(sid) = extract_session_not_found(err.data.as_ref()) {
                     AcpError::SessionNotFound { session_id: sid }
+                } else if is_auth_required_error(&err.message, err.data.as_ref()) {
+                    AcpError::AuthRequired
                 } else {
                     AcpError::AgentInternal {
                         message: err.message,
@@ -276,6 +280,8 @@ impl AcpError {
                     }
                 } else if let Some(sid) = extract_session_not_found(err.data.as_ref()) {
                     AcpError::SessionNotFound { session_id: sid }
+                } else if is_auth_required_error(&err.message, err.data.as_ref()) {
+                    AcpError::AuthRequired
                 } else {
                     AcpError::AgentInternal {
                         message: err.message,
@@ -304,6 +310,28 @@ fn extract_session_not_found(data: Option<&serde_json::Value>) -> Option<String>
     let prefix = "Session not found: ";
     let sid = msg.strip_prefix(prefix)?.trim();
     if sid.is_empty() { None } else { Some(sid.to_owned()) }
+}
+
+fn is_auth_required_error(message: &str, data: Option<&serde_json::Value>) -> bool {
+    if contains_auth_required(message) {
+        return true;
+    }
+    let Some(value) = data else {
+        return false;
+    };
+    match value {
+        serde_json::Value::String(s) => contains_auth_required(s),
+        serde_json::Value::Object(obj) => obj
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(contains_auth_required),
+        _ => false,
+    }
+}
+
+fn contains_auth_required(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("authentication required") || lower.contains("auth required")
 }
 
 #[cfg(test)]
@@ -529,6 +557,15 @@ mod tests {
             AcpError::SessionNotFound { session_id } => assert_eq!(session_id, "sess-ie"),
             other => panic!("expected SessionNotFound, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn from_sdk_internal_with_auth_required_data() {
+        let sdk_err = SdkError::internal_error().data(serde_json::json!({
+            "error": "Authentication required: Authentication failed: Qwen OAuth credentials expired."
+        }));
+        let acp = AcpError::from_sdk(sdk_err, "session/new");
+        assert!(matches!(acp, AcpError::AuthRequired));
     }
 
     /// Unrelated `data` payloads must not trigger the rescue path —

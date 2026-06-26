@@ -15,11 +15,64 @@ use aionui_db::models::McpServerRow;
 use aionui_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
 use aionui_runtime::{
     ManagedAcpToolId, ensure_managed_acp_tool_with_reporter, ensure_node_runtime_with_reporter, ensure_runtime_command,
-    ensure_runtime_command_with_reporter, resolve_command_path,
+    ensure_runtime_command_with_reporter, map_workspace_path_for_wsl, resolve_command_path,
 };
 use tracing::{debug, info, warn};
 
 use crate::runtime_status::{conversation_acp_tool_runtime_reporter, conversation_runtime_reporter};
+
+const WSL_AGENT_LAUNCH_SCRIPT: &str = r#"if command -v setsid >/dev/null 2>&1; then
+  setsid "$@" &
+else
+  "$@" &
+fi
+child=$!
+printf '__AIONUI_WSL_AGENT_PID=%s\n' "$child" >&2
+wait "$child"
+"#;
+
+const WSL_BRIDGE_LAUNCH_SCRIPT: &str = r#"required_command="$1"
+shift
+if ! command -v "$required_command" >/dev/null 2>&1; then
+  printf 'AionUi WSL bridge launcher missing required command: %s\n' "$required_command" >&2
+  exit 127
+fi
+cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/aionui"
+launch_dir="$cache_root/acp-bridge"
+npm_cache_dir="$cache_root/npm-cache"
+mkdir -p "$launch_dir" "$npm_cache_dir"
+cd "$launch_dir" || exit 1
+export npm_config_cache="$npm_cache_dir"
+if command -v setsid >/dev/null 2>&1; then
+  setsid "$@" &
+else
+  "$@" &
+fi
+child=$!
+printf '__AIONUI_WSL_AGENT_PID=%s\n' "$child" >&2
+wait "$child"
+"#;
+
+const WSL_USER_SHELL_EXEC_SCRIPT: &str = r#"script="$1"
+shift
+shell="${SHELL:-}"
+if [ -z "$shell" ] || [ ! -x "$shell" ]; then
+  user="$(id -un 2>/dev/null || true)"
+  if [ -n "$user" ]; then
+    shell="$(getent passwd "$user" 2>/dev/null | awk -F: '{print $7}')"
+  fi
+fi
+if [ -z "$shell" ] || [ ! -x "$shell" ]; then
+  user="${user:-$(id -un 2>/dev/null || true)}"
+  if [ -n "$user" ] && [ -r /etc/passwd ]; then
+    shell="$(awk -F: -v u="$user" '$1 == u {print $7; exit}' /etc/passwd)"
+  fi
+fi
+if [ -z "$shell" ] || [ ! -x "$shell" ]; then
+  shell="/bin/sh"
+fi
+exec "$shell" -lc "$script" "$@"
+"#;
 
 pub(super) async fn build(
     deps: Arc<AgentFactoryDeps>,
@@ -76,8 +129,14 @@ pub(super) async fn build(
         );
     }
 
-    let mut command_spec =
-        resolve_agent_command_spec(&meta, &ctx.workspace, &ctx.conversation_id, deps.broadcaster.clone()).await?;
+    let runtime_workspace = resolve_runtime_workspace(&meta, &ctx.workspace)?;
+    let mut command_spec = resolve_agent_command_spec(
+        &meta,
+        &runtime_workspace,
+        &ctx.conversation_id,
+        deps.broadcaster.clone(),
+    )
+    .await?;
     if meta.backend.as_deref() == Some("claude") {
         let cc_switch_env = crate::cc_switch::read_claude_provider_env();
         if !cc_switch_env.is_empty() {
@@ -145,7 +204,8 @@ pub(super) async fn build(
         assemble_acp_params(
             ctx.conversation_id.clone(),
             WorkspaceInfo {
-                path: ctx.workspace,
+                path: ctx.workspace.clone(),
+                runtime_path: runtime_workspace,
                 is_custom: ctx.is_custom_workspace,
             },
             meta,
@@ -202,6 +262,10 @@ async fn resolve_agent_command_spec(
     conversation_id: &str,
     broadcaster: Arc<dyn aionui_realtime::EventBroadcaster>,
 ) -> Result<CommandSpec, AgentError> {
+    if meta.runtime.as_ref().is_some_and(|runtime| runtime.is_wsl()) {
+        return resolve_wsl_agent_command_spec(meta, workspace);
+    }
+
     if meta.agent_source == aionui_api_types::AgentSource::Builtin
         && let Some(backend) = meta.backend.as_deref()
         && let Some(tool) = ManagedAcpToolId::from_backend(backend)
@@ -300,6 +364,108 @@ async fn resolve_builtin_managed_acp_command_spec(
         env,
         cwd: Some(workspace.to_owned()),
     })
+}
+
+fn resolve_runtime_workspace(meta: &aionui_api_types::AgentMetadata, workspace: &str) -> Result<String, AgentError> {
+    let Some(runtime) = meta.runtime.as_ref().filter(|runtime| runtime.is_wsl()) else {
+        return Ok(workspace.to_owned());
+    };
+    let distro = runtime
+        .distro
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| AgentError::bad_request(format!("Agent '{}' WSL runtime is missing distro", meta.name)))?;
+
+    map_workspace_path_for_wsl(workspace, distro)
+        .map_err(|error| AgentError::workspace_path_runtime_unavailable(format!("{workspace} ({error})")))
+}
+
+fn resolve_wsl_agent_command_spec(
+    meta: &aionui_api_types::AgentMetadata,
+    workspace: &str,
+) -> Result<CommandSpec, AgentError> {
+    let runtime = meta
+        .runtime
+        .as_ref()
+        .ok_or_else(|| AgentError::bad_request(format!("Agent '{}' WSL runtime metadata is missing", meta.name)))?;
+    let distro = runtime
+        .distro
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| AgentError::bad_request(format!("Agent '{}' WSL runtime is missing distro", meta.name)))?;
+    let cli_command = runtime
+        .cli_path
+        .as_deref()
+        .or(meta.command.as_deref())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| AgentError::bad_request(format!("Agent '{}' has no WSL spawn command configured", meta.name)))?;
+
+    let launch = if meta.agent_source == aionui_api_types::AgentSource::Builtin
+        && let Some(backend) = meta.backend.as_deref()
+        && let Some(tool) = ManagedAcpToolId::from_backend(backend)
+    {
+        wsl_bridge_launch_args(tool, cli_command)
+    } else {
+        let mut args = vec![cli_command.to_owned()];
+        args.extend(meta.args.iter().cloned());
+        WslLaunchArgs {
+            script: WSL_AGENT_LAUNCH_SCRIPT,
+            argv0: "aionui-wsl-agent",
+            args,
+        }
+    };
+
+    let mut args = vec![
+        "-d".to_owned(),
+        distro.to_owned(),
+        "--cd".to_owned(),
+        workspace.to_owned(),
+        "--exec".to_owned(),
+        "sh".to_owned(),
+        "-lc".to_owned(),
+        WSL_USER_SHELL_EXEC_SCRIPT.to_owned(),
+        "aionui-wsl-user-shell".to_owned(),
+        launch.script.to_owned(),
+        launch.argv0.to_owned(),
+    ];
+    args.extend(launch.args);
+
+    Ok(CommandSpec {
+        command: "wsl.exe".into(),
+        args,
+        env: meta
+            .env
+            .iter()
+            .map(|entry| aionui_common::EnvVar {
+                name: entry.name.clone(),
+                value: entry.value.clone(),
+            })
+            .collect(),
+        cwd: None,
+    })
+}
+
+struct WslLaunchArgs {
+    script: &'static str,
+    argv0: &'static str,
+    args: Vec<String>,
+}
+
+fn wsl_bridge_launch_args(tool: ManagedAcpToolId, cli_command: &str) -> WslLaunchArgs {
+    let mut args = vec!["npx".to_owned()];
+    if tool == ManagedAcpToolId::ClaudeAgentAcp {
+        args.push("env".to_owned());
+        args.push(format!("CLAUDE_CODE_EXECUTABLE={cli_command}"));
+    }
+    args.push("npx".to_owned());
+    args.push("--yes".to_owned());
+    args.push(format!("{}@{}", tool.package_name(), tool.version()));
+
+    WslLaunchArgs {
+        script: WSL_BRIDGE_LAUNCH_SCRIPT,
+        argv0: "aionui-wsl-bridge",
+        args,
+    }
 }
 
 /// Load the operator's enabled MCP servers from the DB, log+skip any rows
@@ -577,6 +743,70 @@ mod tests {
         .to_string()
     }
 
+    fn test_acp_meta() -> aionui_api_types::AgentMetadata {
+        aionui_api_types::AgentMetadata {
+            id: "agent-1".into(),
+            icon: None,
+            name: "Test ACP".into(),
+            name_i18n: None,
+            description: None,
+            description_i18n: None,
+            backend: Some("custom".into()),
+            agent_type: aionui_common::AgentType::Acp,
+            agent_source: aionui_api_types::AgentSource::Custom,
+            agent_source_info: aionui_api_types::AgentSourceInfo::default(),
+            runtime: None,
+            runtime_scope_id: None,
+            runtime_display_name: None,
+            enabled: true,
+            available: true,
+            command: Some("npx".into()),
+            resolved_command: None,
+            args: vec!["-y".into(), "@scope/test-agent".into()],
+            env: vec![aionui_api_types::AgentEnvEntry {
+                name: "K".into(),
+                value: "V".into(),
+                description: None,
+            }],
+            native_skills_dirs: None,
+            behavior_policy: aionui_api_types::BehaviorPolicy::default(),
+            yolo_id: None,
+            sort_order: 0,
+            team_capable: false,
+            handshake: aionui_api_types::AgentHandshake::default(),
+        }
+    }
+
+    fn test_wsl_meta() -> aionui_api_types::AgentMetadata {
+        let mut meta = test_acp_meta();
+        meta.id = "agent-1:wsl:ubuntu".into();
+        meta.name = "Test ACP (Ubuntu)".into();
+        meta.command = Some("test-agent".into());
+        meta.runtime = Some(aionui_api_types::AgentRuntimeMetadata {
+            kind: "wsl".into(),
+            distro: Some("Ubuntu".into()),
+            cli_path: Some("/usr/bin/test-agent".into()),
+            state: Some("Running".into()),
+            ..Default::default()
+        });
+        meta.runtime_scope_id = Some("wsl:Ubuntu".into());
+        meta.runtime_display_name = Some("Ubuntu".into());
+        meta
+    }
+
+    fn test_builtin_wsl_meta(backend: &str, cli_path: &str) -> aionui_api_types::AgentMetadata {
+        let mut meta = test_wsl_meta();
+        meta.id = format!("{backend}:wsl:ubuntu");
+        meta.name = format!("{backend} (Ubuntu)");
+        meta.backend = Some(backend.into());
+        meta.agent_source = aionui_api_types::AgentSource::Builtin;
+        meta.agent_source_info.binary_name = Some(backend.into());
+        meta.command = Some(backend.into());
+        meta.args = Vec::new();
+        meta.runtime.as_mut().expect("wsl runtime").cli_path = Some(cli_path.into());
+        meta
+    }
+
     fn path_test_lock() -> &'static tokio::sync::Mutex<()> {
         static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -651,34 +881,7 @@ mod tests {
         let _runtime_data_dir = test_runtime_data_dir();
         unsafe { std::env::set_var("AIONUI_BUNDLED_MANAGED_RESOURCES", runtime.path()) };
 
-        let meta = aionui_api_types::AgentMetadata {
-            id: "agent-1".into(),
-            icon: None,
-            name: "Test ACP".into(),
-            name_i18n: None,
-            description: None,
-            description_i18n: None,
-            backend: Some("custom".into()),
-            agent_type: aionui_common::AgentType::Acp,
-            agent_source: aionui_api_types::AgentSource::Custom,
-            agent_source_info: aionui_api_types::AgentSourceInfo::default(),
-            enabled: true,
-            available: true,
-            command: Some("npx".into()),
-            resolved_command: None,
-            args: vec!["-y".into(), "@scope/test-agent".into()],
-            env: vec![aionui_api_types::AgentEnvEntry {
-                name: "K".into(),
-                value: "V".into(),
-                description: None,
-            }],
-            native_skills_dirs: None,
-            behavior_policy: aionui_api_types::BehaviorPolicy::default(),
-            yolo_id: None,
-            sort_order: 0,
-            team_capable: false,
-            handshake: aionui_api_types::AgentHandshake::default(),
-        };
+        let meta = test_acp_meta();
 
         let spec = resolve_agent_command_spec(
             &meta,
@@ -696,6 +899,122 @@ mod tests {
         assert_eq!(spec.args, vec!["-y".to_owned(), "@scope/test-agent".to_owned()]);
         assert!(spec.env.iter().any(|entry| entry.name == "K" && entry.value == "V"));
         assert_eq!(spec.cwd.as_deref(), Some("/tmp/workspace"));
+    }
+
+    #[test]
+    fn resolve_runtime_workspace_keeps_native_rows_unchanged() {
+        let meta = test_acp_meta();
+        let workspace = resolve_runtime_workspace(&meta, r"C:\Users\cheng\project").expect("workspace");
+        assert_eq!(workspace, r"C:\Users\cheng\project");
+    }
+
+    #[test]
+    fn resolve_runtime_workspace_maps_wsl_rows() {
+        let meta = test_wsl_meta();
+        let workspace = resolve_runtime_workspace(&meta, r"C:\Users\cheng\project").expect("workspace");
+        assert_eq!(workspace, "/mnt/c/Users/cheng/project");
+    }
+
+    #[test]
+    fn resolve_runtime_workspace_rejects_unmappable_wsl_rows_without_fallback() {
+        let meta = test_wsl_meta();
+        let err = resolve_runtime_workspace(&meta, "relative/project").unwrap_err();
+        match err {
+            AgentError::WorkspacePathRuntimeUnavailable(message) => {
+                assert!(message.contains("relative/project"));
+                assert!(message.contains("workspace path must be absolute"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_wsl_agent_command_spec_uses_wsl_exe_and_mapped_workspace() {
+        let meta = test_wsl_meta();
+        let spec = resolve_wsl_agent_command_spec(&meta, "/mnt/c/Users/cheng/project").expect("command spec");
+
+        assert_eq!(spec.command, PathBuf::from("wsl.exe"));
+        assert_eq!(
+            spec.args,
+            vec![
+                "-d",
+                "Ubuntu",
+                "--cd",
+                "/mnt/c/Users/cheng/project",
+                "--exec",
+                "sh",
+                "-lc",
+                WSL_USER_SHELL_EXEC_SCRIPT,
+                "aionui-wsl-user-shell",
+                WSL_AGENT_LAUNCH_SCRIPT,
+                "aionui-wsl-agent",
+                "/usr/bin/test-agent",
+                "-y",
+                "@scope/test-agent",
+            ]
+        );
+        assert_eq!(spec.cwd, None);
+        assert!(spec.env.iter().any(|entry| entry.name == "K" && entry.value == "V"));
+    }
+
+    #[test]
+    fn resolve_wsl_managed_claude_uses_wsl_npx_bridge_and_cli_executable() {
+        let meta = test_builtin_wsl_meta("claude", "/usr/local/bin/claude");
+        let spec = resolve_wsl_agent_command_spec(&meta, "/mnt/c/Users/cheng/project").expect("command spec");
+
+        assert_eq!(spec.command, PathBuf::from("wsl.exe"));
+        assert_eq!(
+            spec.args,
+            vec![
+                "-d",
+                "Ubuntu",
+                "--cd",
+                "/mnt/c/Users/cheng/project",
+                "--exec",
+                "sh",
+                "-lc",
+                WSL_USER_SHELL_EXEC_SCRIPT,
+                "aionui-wsl-user-shell",
+                WSL_BRIDGE_LAUNCH_SCRIPT,
+                "aionui-wsl-bridge",
+                "npx",
+                "env",
+                "CLAUDE_CODE_EXECUTABLE=/usr/local/bin/claude",
+                "npx",
+                "--yes",
+                "@agentclientprotocol/claude-agent-acp@0.39.0",
+            ]
+        );
+        assert_eq!(spec.cwd, None);
+    }
+
+    #[test]
+    fn resolve_wsl_managed_codex_uses_wsl_npx_bridge() {
+        let meta = test_builtin_wsl_meta("codex", "/home/cheng/.local/bin/codex");
+        let spec = resolve_wsl_agent_command_spec(&meta, "/mnt/c/Users/cheng/project").expect("command spec");
+
+        assert_eq!(spec.command, PathBuf::from("wsl.exe"));
+        assert_eq!(
+            spec.args,
+            vec![
+                "-d",
+                "Ubuntu",
+                "--cd",
+                "/mnt/c/Users/cheng/project",
+                "--exec",
+                "sh",
+                "-lc",
+                WSL_USER_SHELL_EXEC_SCRIPT,
+                "aionui-wsl-user-shell",
+                WSL_BRIDGE_LAUNCH_SCRIPT,
+                "aionui-wsl-bridge",
+                "npx",
+                "npx",
+                "--yes",
+                "@zed-industries/codex-acp@0.16.0",
+            ]
+        );
+        assert_eq!(spec.cwd, None);
     }
 
     #[tokio::test]

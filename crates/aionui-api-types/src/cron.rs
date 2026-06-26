@@ -41,6 +41,10 @@ pub struct CronAgentConfigDto {
     pub backend: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_scope_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_preset: Option<bool>,
@@ -407,6 +411,8 @@ mod tests {
         let c = CronAgentConfigDto {
             backend: "acp".into(),
             name: "Test".into(),
+            agent_id: None,
+            runtime_scope_id: None,
             cli_path: None,
             is_preset: None,
             custom_agent_id: None,
@@ -427,6 +433,8 @@ mod tests {
         let c = CronAgentConfigDto {
             backend: "acp".into(),
             name: "Agent".into(),
+            agent_id: Some("builtin-acp:wsl:ubuntu".into()),
+            runtime_scope_id: Some("wsl:Ubuntu".into()),
             cli_path: Some("/bin/x".into()),
             is_preset: Some(false),
             custom_agent_id: Some("c1".into()),
@@ -470,6 +478,8 @@ mod tests {
                 agent_config: Some(CronAgentConfigDto {
                     backend: "acp".into(),
                     name: "Claude".into(),
+                    agent_id: None,
+                    runtime_scope_id: None,
                     cli_path: None,
                     is_preset: None,
                     custom_agent_id: None,

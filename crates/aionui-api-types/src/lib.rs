@@ -42,7 +42,9 @@ pub use agent_build_extra::{
     AcpBuildExtra, AcpModelInfo, AionrsBuildExtra, SessionMcpServer, SessionMcpTransport,
     SlashCommandCompletionBehavior, SlashCommandItem,
 };
-pub use agent_discovery::{AgentEnvEntry, AgentHandshake, AgentMetadata, AgentSource, AgentSourceInfo, BehaviorPolicy};
+pub use agent_discovery::{
+    AgentEnvEntry, AgentHandshake, AgentMetadata, AgentRuntimeMetadata, AgentSource, AgentSourceInfo, BehaviorPolicy,
+};
 pub use agent_error::{
     AgentErrorCode, AgentErrorOwnership, AgentErrorResolution, AgentErrorResolutionKind, AgentErrorResolutionTarget,
     AgentStreamErrorData,
@@ -85,6 +87,7 @@ pub use cron::{
 };
 pub use custom_agent::{
     CustomAgentAdvancedOverrides, CustomAgentUpsertRequest, DeleteCustomAgentResponse, SetEnabledRequest,
+    UpdateWslRuntimeSettingsRequest, WslRuntimeSettingsResponse,
 };
 pub use extension::{
     DisableExtensionRequest, EnableExtensionRequest, ExtensionSummaryResponse, GetI18nRequest, GetPermissionsRequest,

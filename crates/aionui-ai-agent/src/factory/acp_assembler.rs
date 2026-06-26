@@ -11,7 +11,10 @@ use aionui_common::constants::TEAM_CAPABLE_BACKENDS;
 /// Pre-computed workspace information.
 #[derive(Debug, Clone)]
 pub struct WorkspaceInfo {
+    /// Host-side workspace path used by AionUi persistence and UI surfaces.
     pub path: String,
+    /// Runtime-side workspace path passed to the ACP backend.
+    pub runtime_path: String,
     pub is_custom: bool,
 }
 
@@ -40,7 +43,7 @@ pub struct AcpSessionParams {
 impl AcpSessionParams {
     /// Build a `NewSessionRequest` using the pre-computed MCP servers.
     pub fn new_session_request(&self) -> NewSessionRequest {
-        let req = NewSessionRequest::new(&self.workspace.path);
+        let req = NewSessionRequest::new(&self.workspace.runtime_path);
         if self.mcp_servers.is_empty() {
             req
         } else {
@@ -236,6 +239,9 @@ mod tests {
             agent_type: aionui_common::AgentType::Acp,
             agent_source: aionui_api_types::AgentSource::Builtin,
             agent_source_info: aionui_api_types::AgentSourceInfo::default(),
+            runtime: None,
+            runtime_scope_id: None,
+            runtime_display_name: None,
             enabled: true,
             available: true,
             command: Some("claude".into()),
@@ -266,6 +272,7 @@ mod tests {
             "conv-1".into(),
             WorkspaceInfo {
                 path: "/tmp/workspace".into(),
+                runtime_path: "/tmp/workspace".into(),
                 is_custom: false,
             },
             test_metadata(),
@@ -284,6 +291,34 @@ mod tests {
             Some(&["mcp-docs".to_owned()][..])
         );
         assert_eq!(params.mcp_servers.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn new_session_request_uses_runtime_workspace_without_rewriting_host_workspace() {
+        let params = assemble_acp_params(
+            "conv-1".into(),
+            WorkspaceInfo {
+                path: r"C:\Users\cheng\project".into(),
+                runtime_path: "/mnt/c/Users/cheng/project".into(),
+                is_custom: true,
+            },
+            test_metadata(),
+            CommandSpec::default(),
+            AcpBuildExtra::default(),
+            Vec::new(),
+            None,
+            PathBuf::from("/tmp/data"),
+        )
+        .await;
+
+        assert_eq!(params.workspace.path, r"C:\Users\cheng\project");
+        assert_eq!(params.workspace.runtime_path, "/mnt/c/Users/cheng/project");
+
+        let request = serde_json::to_value(params.new_session_request()).expect("serialize new session request");
+        assert_eq!(
+            request.get("cwd").and_then(serde_json::Value::as_str),
+            Some("/mnt/c/Users/cheng/project")
+        );
     }
 
     #[test]

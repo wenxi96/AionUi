@@ -1,4 +1,5 @@
 use agent_client_protocol::schema::Meta as SdkMeta;
+use aionui_api_types::{AgentMetadata, AgentRuntimeMetadata};
 use aionui_common::{Confirmation, ConfirmationOption};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,8 +19,25 @@ pub struct AcpPermissionRequestData {
     pub session_id: String,
     pub tool_call: AcpPermissionToolCall,
     pub options: Vec<AcpPermissionOptionData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_context: Option<AcpPermissionRuntimeContext>,
     #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<SdkMeta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcpPermissionRuntimeContext {
+    pub runtime_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_scope_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distro: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_path: Option<String>,
+    pub workspace_host_path: String,
+    pub workspace_runtime_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +77,37 @@ pub enum AcpPermissionOptionKind {
     AllowAlways,
     RejectOnce,
     RejectAlways,
+}
+
+impl AcpPermissionRuntimeContext {
+    pub fn for_agent(
+        metadata: &AgentMetadata,
+        workspace_host_path: &str,
+        workspace_runtime_path: &str,
+    ) -> Option<Self> {
+        let runtime = metadata.runtime.as_ref()?;
+        if !should_emit_runtime_context(runtime, workspace_host_path, workspace_runtime_path) {
+            return None;
+        }
+
+        Some(Self {
+            runtime_kind: runtime.kind.clone(),
+            runtime_scope_id: metadata.runtime_scope_id.clone(),
+            runtime_display_name: metadata.runtime_display_name.clone(),
+            distro: runtime.distro.clone(),
+            agent_path: runtime.cli_path.clone(),
+            workspace_host_path: workspace_host_path.to_owned(),
+            workspace_runtime_path: workspace_runtime_path.to_owned(),
+        })
+    }
+}
+
+fn should_emit_runtime_context(
+    runtime: &AgentRuntimeMetadata,
+    workspace_host_path: &str,
+    workspace_runtime_path: &str,
+) -> bool {
+    runtime.is_wsl() || workspace_host_path != workspace_runtime_path
 }
 
 impl AcpPermissionEventData {
@@ -105,5 +154,67 @@ impl AcpPermissionRequestData {
                 })
                 .collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn runtime_context_is_omitted_for_native_matching_workspace() {
+        let metadata: AgentMetadata = serde_json::from_value(json!({
+            "id": "native-claude",
+            "name": "Claude",
+            "backend": "claude",
+            "agent_type": "acp",
+            "agent_source": "builtin",
+            "runtime": {
+                "kind": "native",
+                "platform": "windows"
+            },
+            "enabled": true,
+            "available": true,
+            "sort_order": 3100
+        }))
+        .unwrap();
+
+        let context = AcpPermissionRuntimeContext::for_agent(&metadata, "D:\\code\\project", "D:\\code\\project");
+
+        assert!(context.is_none());
+    }
+
+    #[test]
+    fn runtime_context_is_built_for_wsl_workspace() {
+        let metadata: AgentMetadata = serde_json::from_value(json!({
+            "id": "wsl-ubuntu-claude",
+            "name": "Claude on Ubuntu",
+            "backend": "claude",
+            "agent_type": "acp",
+            "agent_source": "builtin",
+            "runtime": {
+                "kind": "wsl",
+                "distro": "Ubuntu",
+                "cliPath": "/usr/local/bin/claude"
+            },
+            "runtime_scope_id": "wsl:Ubuntu",
+            "runtime_display_name": "Ubuntu",
+            "enabled": true,
+            "available": true,
+            "sort_order": 3110
+        }))
+        .unwrap();
+
+        let context = AcpPermissionRuntimeContext::for_agent(&metadata, "D:\\code\\project", "/mnt/d/code/project")
+            .expect("wsl row should emit runtime context");
+
+        assert_eq!(context.runtime_kind, "wsl");
+        assert_eq!(context.runtime_scope_id.as_deref(), Some("wsl:Ubuntu"));
+        assert_eq!(context.runtime_display_name.as_deref(), Some("Ubuntu"));
+        assert_eq!(context.distro.as_deref(), Some("Ubuntu"));
+        assert_eq!(context.agent_path.as_deref(), Some("/usr/local/bin/claude"));
+        assert_eq!(context.workspace_host_path, "D:\\code\\project");
+        assert_eq!(context.workspace_runtime_path, "/mnt/d/code/project");
     }
 }

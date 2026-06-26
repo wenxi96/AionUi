@@ -69,14 +69,34 @@ impl CliAgentProcess {
 
         let (exit_tx, exit_rx) = watch::channel(None);
 
+        let wsl_lifecycle = super::wsl_lifecycle::WslLifecycle::from_command_spec(&config);
+
         // Background task: read stderr → ring buffer + log
         let stderr_buffer = Arc::new(Mutex::new(String::new()));
         let stderr_buf_clone = Arc::clone(&stderr_buffer);
+        let stderr_wsl_lifecycle = wsl_lifecycle.clone();
         let stderr_handle = tokio::spawn(async move {
             let reader = BufReader::new(stderr);
-            let mut lines = reader.lines();
+            let mut lines = reader;
+            let mut raw_line = Vec::new();
 
-            while let Ok(Some(line)) = lines.next_line().await {
+            loop {
+                raw_line.clear();
+                match lines.read_until(b'\n', &mut raw_line).await {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(e) => {
+                        warn!(pid, error = %ErrorChain(&e), "Failed to read CLI process stderr");
+                        break;
+                    }
+                }
+
+                let line = decode_stderr_line_lossy(&raw_line);
+                if let Some(lifecycle) = &stderr_wsl_lifecycle
+                    && lifecycle.record_stderr_line(&line).await
+                {
+                    continue;
+                }
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
                     warn!(pid, stderr = trimmed, "CLI process stderr");
@@ -111,6 +131,7 @@ impl CliAgentProcess {
             process_group_id: tracked_process_group_id(pid),
             exit_rx,
             stderr_buffer,
+            wsl_lifecycle,
             _stderr_handle: Arc::new(stderr_handle),
             _exit_handle: Arc::new(exit_handle),
         })
@@ -144,6 +165,12 @@ impl CliAgentProcess {
             config.cwd.as_deref().unwrap_or("<inherit>")
         )
     }
+}
+
+fn decode_stderr_line_lossy(raw_line: &[u8]) -> String {
+    String::from_utf8_lossy(raw_line)
+        .trim_end_matches(['\r', '\n'])
+        .replace('\0', "")
 }
 
 #[cfg(test)]
@@ -321,6 +348,21 @@ printf '%s\n' \
         assert!(!preview.contains("secret-arg-value"));
         assert!(!preview.contains("secret-env-value"));
         assert!(!preview.contains("/secret/path"));
+    }
+
+    #[test]
+    fn stderr_decode_handles_wsl_nul_prefixed_marker() {
+        let line = decode_stderr_line_lossy(b"\0__AIONUI_WSL_AGENT_PID=42\r\n");
+
+        assert_eq!(line, "__AIONUI_WSL_AGENT_PID=42");
+    }
+
+    #[test]
+    fn stderr_decode_tolerates_non_utf8_wsl_warning_bytes() {
+        let line = decode_stderr_line_lossy(&[0xff, b'w', 0, b's', 0, b'l', b'\n']);
+
+        assert!(line.contains('w'), "{line:?}");
+        assert!(!line.contains('\0'), "{line:?}");
     }
 
     #[tokio::test]

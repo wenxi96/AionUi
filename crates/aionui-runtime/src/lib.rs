@@ -17,6 +17,8 @@ pub mod managed_resources;
 pub mod node_runtime;
 mod resolver;
 mod shell_env;
+pub mod wsl;
+pub mod wsl_path;
 
 pub use acp_tool_runtime::{
     ManagedAcpToolError, ManagedAcpToolFailureKind, ManagedAcpToolId, ManagedAcpToolProgress,
@@ -38,6 +40,12 @@ pub use resolver::{ResolveError, bun_bin_dir, resolve_bun, resolve_command_in, r
 pub use shell_env::enhance_process_path;
 mod spawn;
 pub use spawn::{Builder, kill_process_tree};
+pub use wsl::{
+    SystemWslCommandRunner, WslCliProbeResult, WslCommandObservation, WslCommandRunner, WslDistro, WslDistroProbe,
+    WslProbeCommandCategory, WslProbeErrorCode, WslProbeIssue, WslProbeReport, WslRawOutput, WslRunError, WslService,
+    WslStatus, WslVersion, parse_wsl_list_verbose,
+};
+pub use wsl_path::{WslPathMappingError, map_workspace_path_for_wsl};
 
 #[cfg(test)]
 #[path = "../build_support.rs"]

@@ -1,5 +1,5 @@
 use crate::manager::acp::{AcpAgentManager, AcpSession};
-use crate::protocol::events::AgentStreamEvent;
+use crate::protocol::events::{AcpPermissionRuntimeContext, AgentStreamEvent};
 use agent_client_protocol::schema::{SessionModeState, SessionModelState, SessionNotification, UsageUpdate};
 use serde_json::Value;
 use std::sync::Arc;
@@ -135,7 +135,12 @@ impl AcpAgentManager {
     /// Start the permission handler loop. Must be called after the manager
     /// is wrapped in Arc. Delegates to `PermissionRouter::start`.
     pub fn start_permission_handler(self: &Arc<Self>) {
-        self.permission_router.start(self.runtime.clone());
+        let runtime_context = AcpPermissionRuntimeContext::for_agent(
+            &self.params.metadata,
+            &self.params.workspace.path,
+            &self.params.workspace.runtime_path,
+        );
+        self.permission_router.start(self.runtime.clone(), runtime_context);
     }
 
     /// Drain pending domain events from the session aggregate and

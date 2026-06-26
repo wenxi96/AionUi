@@ -12,8 +12,10 @@ use crate::error::AgentError;
 
 mod spawn_sdk;
 mod stderr_monitor;
+mod wsl_lifecycle;
 
 use stderr_monitor::force_kill;
+use wsl_lifecycle::WslLifecycle;
 
 /// Maximum stderr ring-buffer size in bytes.
 pub(super) const STDERR_BUFFER_MAX: usize = 8192;
@@ -66,6 +68,8 @@ pub struct CliAgentProcess {
     /// Stderr ring buffer for diagnostics.
     #[allow(dead_code)] // Read via take_stderr(); part of diagnostics API for startup crash reporting
     stderr_buffer: Arc<Mutex<String>>,
+    /// Optional cleanup helper for WSL wrapper launches.
+    wsl_lifecycle: Option<WslLifecycle>,
     /// Handle to the stderr reader task (for cleanup).
     _stderr_handle: Arc<tokio::task::JoinHandle<()>>,
     /// Handle to the exit monitor task (for cleanup).
@@ -95,11 +99,16 @@ impl CliAgentProcess {
     /// Gracefully terminate the subprocess.
     ///
     /// 1. Close stdin
-    /// 2. Wait up to `grace_period` for the process to exit on its own
-    /// 3. If still running after grace period, send SIGKILL
+    /// 2. For WSL wrapper launches, immediately ask the inner agent tree to terminate
+    /// 3. Wait up to `grace_period` for the process to exit on its own
+    /// 4. If still running after grace period, send SIGKILL
     pub async fn kill(&self, grace_period: Duration) -> Result<(), AgentError> {
         // Close stdin first to signal the child
         self.close_stdin().await;
+
+        if let Some(lifecycle) = &self.wsl_lifecycle {
+            lifecycle.terminate_agent_tree().await?;
+        }
 
         // Wait for graceful exit within the grace period
         let mut rx = self.exit_rx.clone();
@@ -120,6 +129,9 @@ impl CliAgentProcess {
 
         // Force kill
         warn!(pid = self.pid, "Grace period expired, sending SIGKILL");
+        if let Some(lifecycle) = &self.wsl_lifecycle {
+            lifecycle.kill_agent_tree().await?;
+        }
         force_kill(self.pid, self.process_group_id)?;
 
         // Wait for the exit monitor to observe process termination so callers
@@ -232,6 +244,8 @@ pub(super) fn tracked_process_group_id(_pid: u32) -> Option<u32> {
 #[cfg(test)]
 pub(super) mod tests {
     use aionui_common::CommandSpec;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     use super::*;
     use tokio::time::timeout;
@@ -328,6 +342,67 @@ pub(super) mod tests {
 
         timeout(Duration::from_secs(5), proc.wait_for_exit()).await.unwrap();
         assert!(!proc.is_running());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_sends_wsl_lifecycle_term_before_graceful_wrapper_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake_wsl = dir.path().join("wsl.exe");
+        let log = dir.path().join("cleanup.log");
+        let script = format!(
+            r#"#!/bin/sh
+log={log:?}
+case " $* " in
+  *" aionui-wsl-cleanup "*)
+    echo "cleanup $*" >> "$log"
+    exit 0
+    ;;
+esac
+echo "__AIONUI_WSL_AGENT_PID=$$" >&2
+cat >/dev/null
+echo "agent-exit" >> "$log"
+"#,
+            log = log
+        );
+        fs::write(&fake_wsl, script).unwrap();
+        let mut perms = fs::metadata(&fake_wsl).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_wsl, perms).unwrap();
+
+        let config = CommandSpec {
+            command: fake_wsl,
+            args: vec![
+                "-d".to_owned(),
+                "Ubuntu".to_owned(),
+                "--cd".to_owned(),
+                "/tmp".to_owned(),
+                "--".to_owned(),
+                "zsh".to_owned(),
+                "-lc".to_owned(),
+                "cat".to_owned(),
+            ],
+            env: vec![],
+            cwd: None,
+        };
+        let proc = spawn_sdk_test_process(config).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        proc.kill(Duration::from_secs(5)).await.unwrap();
+
+        let log_content = fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            log_content.contains("aionui-wsl-cleanup"),
+            "WSL lifecycle cleanup should run even when the wrapper exits within grace: {log_content:?}"
+        );
+        assert!(
+            log_content.contains("-TERM"),
+            "early cleanup should send TERM before falling back to KILL: {log_content:?}"
+        );
+        assert!(
+            !log_content.contains("-KILL"),
+            "graceful wrapper exit should not require WSL KILL fallback: {log_content:?}"
+        );
     }
 
     #[tokio::test]

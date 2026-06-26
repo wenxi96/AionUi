@@ -7,7 +7,7 @@ use tracing::debug;
 
 use super::permission::{
     AcpPermissionEventData, AcpPermissionOptionData, AcpPermissionOptionKind, AcpPermissionRequestData,
-    AcpPermissionToolCall,
+    AcpPermissionRuntimeContext, AcpPermissionToolCall,
 };
 use super::session_updates::{AvailableCommandsEventData, PlanEventData, ThinkingEventData};
 use super::tool_call::{
@@ -142,11 +142,15 @@ pub(crate) fn session_notification_to_events(notif: &SessionNotification) -> Vec
     events
 }
 
-pub(crate) fn permission_request_to_event_data(request: &RequestPermissionRequest) -> AcpPermissionEventData {
+pub(crate) fn permission_request_to_event_data_with_context(
+    request: &RequestPermissionRequest,
+    runtime_context: Option<AcpPermissionRuntimeContext>,
+) -> AcpPermissionEventData {
     AcpPermissionEventData::Request(AcpPermissionRequestData {
         session_id: request.session_id.to_string(),
         tool_call: map_permission_tool_call(&request.tool_call),
         options: request.options.iter().map(map_permission_option).collect(),
+        runtime_context,
         meta: request.meta.clone(),
     })
 }

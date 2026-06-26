@@ -85,6 +85,17 @@ impl From<ConversationError> for ApiError {
                     "port": 18789
                 })),
             ),
+            ConversationError::Acp(aionui_ai_agent::AcpError::AuthRequired) => ApiError::coded(
+                StatusCode::UNAUTHORIZED,
+                "USER_AGENT_AUTH_REQUIRED",
+                "Agent requires authentication",
+                Some(serde_json::json!({
+                    "resolution": {
+                        "kind": "check_agent_login",
+                        "target": "agent_settings"
+                    }
+                })),
+            ),
             ConversationError::Acp(_) => ApiError::BadGateway("Agent protocol error".into()),
         }
     }
@@ -463,5 +474,17 @@ mod error_mapping_tests {
         let details = app.error_details().expect("details should be present");
         assert_eq!(details["backend"], "openclaw");
         assert_eq!(details["port"], 18789);
+    }
+
+    #[test]
+    fn acp_auth_required_maps_to_actionable_auth_error() {
+        let app = ApiError::from(ConversationError::Acp(aionui_ai_agent::AcpError::AuthRequired));
+
+        assert_eq!(app.status_code(), StatusCode::UNAUTHORIZED);
+        assert_eq!(app.error_code(), "USER_AGENT_AUTH_REQUIRED");
+        assert_eq!(app.public_message(), "Agent requires authentication");
+        let details = app.error_details().expect("details should be present");
+        assert_eq!(details["resolution"]["kind"], "check_agent_login");
+        assert_eq!(details["resolution"]["target"], "agent_settings");
     }
 }

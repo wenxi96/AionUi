@@ -14,16 +14,23 @@
 //!   consumer task, see [`CatalogSender`]).
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use aionui_api_types::{AgentEnvEntry, AgentHandshake, AgentMetadata, AgentSource, AgentSourceInfo, BehaviorPolicy};
-use aionui_common::AgentType;
+use aionui_api_types::{
+    AgentEnvEntry, AgentHandshake, AgentMetadata, AgentRuntimeMetadata, AgentSource, AgentSourceInfo, BehaviorPolicy,
+};
+use aionui_common::{AgentType, now_ms};
 use aionui_db::{AgentMetadataRow, IAgentMetadataRepository, UpdateAgentHandshakeParams};
 use aionui_runtime::{
-    ManagedAcpToolId, RuntimeCommandProbe, probe_managed_acp_tool_supported, probe_node_runtime_supported,
-    probe_runtime_command, resolve_command_path,
+    ManagedAcpToolId, RuntimeCommandProbe, SystemWslCommandRunner, WslCliProbeResult, WslDistro, WslProbeReport,
+    WslService, probe_managed_acp_tool_supported, probe_node_runtime_supported, probe_runtime_command,
+    resolve_command_path,
 };
+use futures_util::{StreamExt, stream};
 use serde_json::Value;
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
@@ -37,6 +44,24 @@ use crate::manager::acp::config_option_catalog::{
 /// drains it serially, so the bound just sizes the burst we can absorb
 /// before producers start to back off.
 const CATALOG_SYNC_CHANNEL_CAPACITY: usize = 256;
+const WSL_PROBE_CONCURRENCY: usize = 16;
+
+trait WslProbeProvider: Send + Sync {
+    fn probe<'a>(&'a self, cli_command: &'a str) -> Pin<Box<dyn Future<Output = WslProbeReport> + Send + 'a>>;
+}
+
+#[derive(Debug, Default)]
+struct SystemWslProbeProvider;
+
+impl WslProbeProvider for SystemWslProbeProvider {
+    fn probe<'a>(&'a self, cli_command: &'a str) -> Pin<Box<dyn Future<Output = WslProbeReport> + Send + 'a>> {
+        Box::pin(async move {
+            WslService::<SystemWslCommandRunner>::new()
+                .probe(Some(cli_command))
+                .await
+        })
+    }
+}
 
 /// One unit of work submitted to the catalog sync consumer task.
 #[derive(Debug)]
@@ -56,6 +81,10 @@ mod registry_tests;
 pub struct AgentRegistry {
     repo: Arc<dyn IAgentMetadataRepository>,
     by_id: RwLock<HashMap<String, AgentMetadata>>,
+    wsl_by_id: RwLock<HashMap<String, AgentMetadata>>,
+    wsl_probe: Arc<dyn WslProbeProvider>,
+    wsl_supported: bool,
+    wsl_enabled: AtomicBool,
     /// MPSC sender shared with every forwarder in every `AcpAgentManager`.
     /// Draining happens in a single background task owned by this
     /// registry, so DB writes for the same (id, field) serialize.
@@ -64,10 +93,41 @@ pub struct AgentRegistry {
 
 impl AgentRegistry {
     pub fn new(repo: Arc<dyn IAgentMetadataRepository>) -> Arc<Self> {
+        Self::new_with_wsl_probe(
+            repo,
+            Arc::new(SystemWslProbeProvider),
+            wsl_runtime_supported_by_host(),
+            wsl_probe_enabled_by_host(),
+        )
+    }
+
+    pub fn new_with_wsl_enabled(repo: Arc<dyn IAgentMetadataRepository>, wsl_enabled: bool) -> Arc<Self> {
+        Self::new_with_wsl_probe(
+            repo,
+            Arc::new(SystemWslProbeProvider),
+            wsl_runtime_supported_by_host(),
+            wsl_enabled,
+        )
+    }
+
+    pub fn default_wsl_enabled_by_host() -> bool {
+        wsl_probe_enabled_by_host()
+    }
+
+    fn new_with_wsl_probe(
+        repo: Arc<dyn IAgentMetadataRepository>,
+        wsl_probe: Arc<dyn WslProbeProvider>,
+        wsl_supported: bool,
+        wsl_enabled: bool,
+    ) -> Arc<Self> {
         let (tx, rx) = mpsc::channel::<CatalogSyncMessage>(CATALOG_SYNC_CHANNEL_CAPACITY);
         let this = Arc::new(Self {
             repo,
             by_id: RwLock::new(HashMap::new()),
+            wsl_by_id: RwLock::new(HashMap::new()),
+            wsl_probe,
+            wsl_supported,
+            wsl_enabled: AtomicBool::new(wsl_supported && wsl_enabled),
             catalog_tx: tx,
         });
 
@@ -178,21 +238,42 @@ impl AgentRegistry {
         // and we don't want that borrow to outlive the move.
         log_availability_summary(map.values(), "AgentRegistry hydrated");
         *self.by_id.write().await = map;
+        self.refresh_wsl_rows().await;
         Ok(())
     }
 
     /// Re-probe every row's command without refetching from the DB.
     /// Useful after PATH has changed (e.g. `launchctl setenv`).
     pub async fn refresh_availability(&self) {
-        let mut guard = self.by_id.write().await;
-        for meta in guard.values_mut() {
-            let (path, reason) = probe_with_reason(meta);
-            meta.resolved_command = path;
-            meta.available = meta.resolved_command.is_some()
-                || (meta.enabled && meta.command.is_none() && meta.agent_source == AgentSource::Internal);
-            log_probe_result(meta, &reason);
+        {
+            let mut guard = self.by_id.write().await;
+            for meta in guard.values_mut() {
+                let (path, reason) = probe_with_reason(meta);
+                meta.resolved_command = path;
+                meta.available = meta.resolved_command.is_some()
+                    || (meta.enabled && meta.command.is_none() && meta.agent_source == AgentSource::Internal);
+                log_probe_result(meta, &reason);
+            }
+            log_availability_summary(guard.values(), "AgentRegistry refresh_availability complete");
         }
-        log_availability_summary(guard.values(), "AgentRegistry refresh_availability complete");
+        self.refresh_wsl_rows().await;
+    }
+
+    pub fn is_wsl_enabled(&self) -> bool {
+        self.wsl_supported && self.wsl_enabled.load(Ordering::SeqCst)
+    }
+
+    pub fn is_wsl_supported(&self) -> bool {
+        self.wsl_supported
+    }
+
+    pub async fn set_wsl_enabled(&self, enabled: bool) {
+        self.wsl_enabled.store(self.wsl_supported && enabled, Ordering::SeqCst);
+        if self.is_wsl_enabled() {
+            self.refresh_wsl_rows().await;
+        } else {
+            self.wsl_by_id.write().await.clear();
+        }
     }
 
     /// Refetch every row from the repository, then re-resolve PATH.
@@ -209,7 +290,10 @@ impl AgentRegistry {
     }
 
     pub async fn get(&self, id: &str) -> Option<AgentMetadata> {
-        self.by_id.read().await.get(id).cloned()
+        if let Some(meta) = self.by_id.read().await.get(id).cloned() {
+            return Some(meta);
+        }
+        self.wsl_by_id.read().await.get(id).cloned()
     }
 
     /// First row whose vendor label matches, among `agent_source = 'builtin'`.
@@ -232,7 +316,15 @@ impl AgentRegistry {
             .filter(|m| m.agent_type == agent_type && is_visible(m))
             .cloned()
             .collect();
-        rows.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name)));
+        rows.extend(
+            self.wsl_by_id
+                .read()
+                .await
+                .values()
+                .filter(|m| m.agent_type == agent_type && is_visible(m))
+                .cloned(),
+        );
+        sort_agent_rows(&mut rows);
         rows
     }
 
@@ -251,7 +343,8 @@ impl AgentRegistry {
             .filter(|m| is_visible(m))
             .cloned()
             .collect();
-        rows.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name)));
+        rows.extend(self.wsl_by_id.read().await.values().filter(|m| is_visible(m)).cloned());
+        sort_agent_rows(&mut rows);
         rows
     }
 
@@ -302,6 +395,48 @@ impl AgentRegistry {
     pub fn repo_handle(&self) -> &Arc<dyn IAgentMetadataRepository> {
         &self.repo
     }
+
+    async fn refresh_wsl_rows(&self) {
+        if !self.is_wsl_enabled() {
+            self.wsl_by_id.write().await.clear();
+            return;
+        }
+
+        let mut base_rows = self
+            .by_id
+            .read()
+            .await
+            .values()
+            .filter(|meta| is_visible(meta) && meta.agent_type == AgentType::Acp)
+            .cloned()
+            .collect::<Vec<_>>();
+        sort_agent_rows(&mut base_rows);
+
+        let probe = self.wsl_probe.clone();
+        let reports = stream::iter(base_rows.into_iter().filter_map(|base| {
+            let cli_command = wsl_cli_command(&base)?.to_owned();
+            Some((base, cli_command))
+        }))
+        .map(|(base, cli_command)| {
+            let probe = probe.clone();
+            async move {
+                let report = probe.probe(&cli_command).await;
+                (base, report)
+            }
+        })
+        .buffer_unordered(WSL_PROBE_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+
+        let mut wsl_rows = HashMap::new();
+        for (base, report) in reports {
+            log_wsl_probe_result(&base, &report);
+            for row in derive_wsl_rows(&base, &report) {
+                wsl_rows.insert(row.id.clone(), row);
+            }
+        }
+        *self.wsl_by_id.write().await = wsl_rows;
+    }
 }
 
 /// A catalog row is visible to callers when the user has it enabled
@@ -310,6 +445,102 @@ impl AgentRegistry {
 /// only `claude` is on PATH) off the pill bar.
 fn is_visible(meta: &AgentMetadata) -> bool {
     meta.enabled && meta.available
+}
+
+fn sort_agent_rows(rows: &mut [AgentMetadata]) {
+    rows.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name)));
+}
+
+fn wsl_cli_command(meta: &AgentMetadata) -> Option<&str> {
+    meta.agent_source_info
+        .binary_name
+        .as_deref()
+        .or(meta.command.as_deref())
+        .filter(|command| !command.is_empty())
+}
+
+fn wsl_probe_enabled_by_host() -> bool {
+    wsl_runtime_supported_by_host()
+}
+
+fn wsl_runtime_supported_by_host() -> bool {
+    cfg!(target_os = "windows")
+}
+
+fn derive_wsl_rows(base: &AgentMetadata, report: &WslProbeReport) -> Vec<AgentMetadata> {
+    if !report.wsl_available {
+        return Vec::new();
+    }
+    report
+        .distros
+        .iter()
+        .filter_map(|distro_probe| {
+            let cli_probe = distro_probe.cli_probe.as_ref()?;
+            if !cli_probe.available {
+                return None;
+            }
+            derive_wsl_row(base, &distro_probe.distro, cli_probe)
+        })
+        .collect()
+}
+
+fn derive_wsl_row(base: &AgentMetadata, distro: &WslDistro, cli_probe: &WslCliProbeResult) -> Option<AgentMetadata> {
+    let found_path = cli_probe.found_path.as_ref()?;
+    let mut row = base.clone();
+    row.id = format!("{}:wsl:{}", base.id, wsl_scope_slug(&distro.name));
+    row.name = format!("{} ({})", base.name, distro.name);
+    row.runtime = Some(AgentRuntimeMetadata {
+        kind: "wsl".into(),
+        distro: Some(distro.name.clone()),
+        version: distro.version.map(Value::from),
+        state: Some(distro.state.clone()),
+        cli_path: Some(found_path.clone()),
+        detected_at: u64::try_from(now_ms()).ok(),
+        probe_mode: Some(cli_probe.probe_mode.clone()),
+        ..Default::default()
+    });
+    row.runtime_scope_id = Some(format!("wsl:{}", distro.name));
+    row.runtime_display_name = Some(distro.name.clone());
+    row.available = true;
+    row.command = Some(cli_probe.command.clone());
+    row.resolved_command = Some(PathBuf::from(found_path));
+    row.sort_order = base.sort_order + 1;
+    Some(row)
+}
+
+fn wsl_scope_slug(value: &str) -> String {
+    let mut slug = String::new();
+    let mut last_dash = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() { "default".into() } else { slug.into() }
+}
+
+fn log_wsl_probe_result(base: &AgentMetadata, report: &WslProbeReport) {
+    if report.wsl_available {
+        debug!(
+            id = %base.id,
+            backend = base.backend.as_deref().unwrap_or("-"),
+            distros = report.distros.len(),
+            issues = report.issues.len(),
+            "WSL probe complete for agent row"
+        );
+    } else {
+        debug!(
+            id = %base.id,
+            backend = base.backend.as_deref().unwrap_or("-"),
+            issues = report.issues.len(),
+            "WSL probe unavailable for agent row"
+        );
+    }
 }
 
 /// Turn a DB row into the public `AgentMetadata`, probing the command
@@ -352,6 +583,9 @@ fn decode_row(row: AgentMetadataRow) -> Option<(AgentMetadata, Option<Unavailabl
         agent_type,
         agent_source,
         agent_source_info,
+        runtime: None,
+        runtime_scope_id: None,
+        runtime_display_name: None,
         enabled: row.enabled,
         available: false,
         command: row.command,
@@ -664,12 +898,175 @@ fn probe_command_candidate(command: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aionui_db::{SqliteAgentMetadataRepository, init_database_memory};
+    use std::sync::Mutex;
+
+    use aionui_db::{SqliteAgentMetadataRepository, UpsertAgentMetadataParams, init_database_memory};
+    use aionui_runtime::{WslCommandObservation, WslProbeCommandCategory};
 
     async fn registry() -> Arc<AgentRegistry> {
         let db = init_database_memory().await.unwrap();
         let repo = Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone()));
         let reg = AgentRegistry::new(repo);
+        reg.hydrate().await.unwrap();
+        reg
+    }
+
+    struct MockWslProbeProvider {
+        reports: Mutex<HashMap<String, WslProbeReport>>,
+        default_wsl_available: bool,
+    }
+
+    impl Default for MockWslProbeProvider {
+        fn default() -> Self {
+            Self {
+                reports: Mutex::new(HashMap::new()),
+                default_wsl_available: true,
+            }
+        }
+    }
+
+    impl MockWslProbeProvider {
+        fn with_report(mut self, command: &str, report: WslProbeReport) -> Self {
+            self.reports.get_mut().unwrap().insert(command.into(), report);
+            self
+        }
+
+        fn with_unavailable_wsl(mut self) -> Self {
+            self.default_wsl_available = false;
+            self
+        }
+    }
+
+    impl WslProbeProvider for MockWslProbeProvider {
+        fn probe<'a>(&'a self, cli_command: &'a str) -> Pin<Box<dyn Future<Output = WslProbeReport> + Send + 'a>> {
+            Box::pin(async move {
+                self.reports
+                    .lock()
+                    .unwrap()
+                    .get(cli_command)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        if self.default_wsl_available {
+                            cli_missing_wsl_report(cli_command)
+                        } else {
+                            unavailable_wsl_report()
+                        }
+                    })
+            })
+        }
+    }
+
+    fn unavailable_wsl_report() -> WslProbeReport {
+        WslProbeReport {
+            wsl_available: false,
+            status: None,
+            version: None,
+            distros: Vec::new(),
+            issues: Vec::new(),
+        }
+    }
+
+    fn available_wsl_report(command: &str, distro: &str, path: &str) -> WslProbeReport {
+        WslProbeReport {
+            wsl_available: true,
+            status: None,
+            version: None,
+            distros: vec![aionui_runtime::WslDistroProbe {
+                distro: WslDistro {
+                    name: distro.into(),
+                    state: "Running".into(),
+                    version: Some(2),
+                },
+                cli_probe: Some(WslCliProbeResult {
+                    command: command.into(),
+                    found_path: Some(path.into()),
+                    available: true,
+                    probe_mode: "user-shell".into(),
+                    observation: WslCommandObservation {
+                        category: WslProbeCommandCategory::UserShellCliProbe,
+                        latency_ms: 1,
+                        status_code: Some(0),
+                        stderr_summary: None,
+                    },
+                }),
+                skipped_reason: None,
+            }],
+            issues: Vec::new(),
+        }
+    }
+
+    fn cli_missing_wsl_report(command: &str) -> WslProbeReport {
+        WslProbeReport {
+            wsl_available: true,
+            status: None,
+            version: None,
+            distros: vec![aionui_runtime::WslDistroProbe {
+                distro: WslDistro {
+                    name: "Ubuntu".into(),
+                    state: "Running".into(),
+                    version: Some(2),
+                },
+                cli_probe: Some(WslCliProbeResult {
+                    command: command.into(),
+                    found_path: None,
+                    available: false,
+                    probe_mode: "user-shell".into(),
+                    observation: WslCommandObservation {
+                        category: WslProbeCommandCategory::UserShellCliProbe,
+                        latency_ms: 1,
+                        status_code: Some(1),
+                        stderr_summary: None,
+                    },
+                }),
+                skipped_reason: None,
+            }],
+            issues: Vec::new(),
+        }
+    }
+
+    fn wsl_test_agent_params<'a>() -> UpsertAgentMetadataParams<'a> {
+        UpsertAgentMetadataParams {
+            id: "native-wsl-test",
+            icon: None,
+            name: "WSL Test Agent",
+            name_i18n: None,
+            description: None,
+            description_i18n: None,
+            backend: Some("wsl-test"),
+            agent_type: "acp",
+            agent_source: "custom",
+            agent_source_info: Some("{}"),
+            enabled: true,
+            command: Some("sh"),
+            args: Some("[]"),
+            env: Some("[]"),
+            native_skills_dirs: None,
+            behavior_policy: Some("{}"),
+            yolo_id: None,
+            agent_capabilities: None,
+            auth_methods: None,
+            config_options: None,
+            available_modes: None,
+            available_models: None,
+            available_commands: None,
+            sort_order: 1,
+        }
+    }
+
+    async fn registry_with_wsl_probe(mock: MockWslProbeProvider) -> Arc<AgentRegistry> {
+        let db = init_database_memory().await.unwrap();
+        let repo = Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone()));
+        repo.upsert(&wsl_test_agent_params()).await.unwrap();
+        let reg = AgentRegistry::new_with_wsl_probe(repo, Arc::new(mock), true, true);
+        reg.hydrate().await.unwrap();
+        reg
+    }
+
+    async fn registry_with_unsupported_wsl_probe(mock: MockWslProbeProvider) -> Arc<AgentRegistry> {
+        let db = init_database_memory().await.unwrap();
+        let repo = Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone()));
+        repo.upsert(&wsl_test_agent_params()).await.unwrap();
+        let reg = AgentRegistry::new_with_wsl_probe(repo, Arc::new(mock), false, true);
         reg.hydrate().await.unwrap();
         reg
     }
@@ -742,6 +1139,107 @@ mod tests {
         assert!(
             visible.iter().any(|m| m.agent_type == AgentType::Aionrs),
             "internal aionrs row should survive the filter"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_all_merges_native_and_wsl_rows_with_unique_identity() {
+        let reg = registry_with_wsl_probe(
+            MockWslProbeProvider::default().with_report("sh", available_wsl_report("sh", "Ubuntu", "/usr/bin/sh")),
+        )
+        .await;
+
+        let visible = reg.list_all().await;
+        let native = visible
+            .iter()
+            .find(|m| m.id == "native-wsl-test")
+            .expect("native custom row should remain visible");
+        let wsl = visible
+            .iter()
+            .find(|m| m.id == "native-wsl-test:wsl:ubuntu")
+            .expect("WSL derived row should be visible");
+
+        assert_eq!(native.backend, wsl.backend);
+        assert_ne!(native.id, wsl.id);
+        assert_eq!(wsl.runtime.as_ref().unwrap().kind, "wsl");
+        assert_eq!(wsl.runtime.as_ref().unwrap().distro.as_deref(), Some("Ubuntu"));
+        assert_eq!(wsl.runtime_scope_id.as_deref(), Some("wsl:Ubuntu"));
+        assert_eq!(
+            wsl.resolved_command.as_deref(),
+            Some(std::path::Path::new("/usr/bin/sh"))
+        );
+    }
+
+    #[tokio::test]
+    async fn get_returns_derived_wsl_row_by_id() {
+        let reg = registry_with_wsl_probe(
+            MockWslProbeProvider::default().with_report("sh", available_wsl_report("sh", "Ubuntu", "/usr/bin/sh")),
+        )
+        .await;
+
+        let wsl = reg
+            .get("native-wsl-test:wsl:ubuntu")
+            .await
+            .expect("derived WSL row should be addressable by id");
+        assert_eq!(wsl.backend.as_deref(), Some("wsl-test"));
+        assert_eq!(wsl.runtime_display_name.as_deref(), Some("Ubuntu"));
+    }
+
+    #[tokio::test]
+    async fn set_wsl_enabled_clears_and_reprobes_derived_rows() {
+        let reg = registry_with_wsl_probe(
+            MockWslProbeProvider::default().with_report("sh", available_wsl_report("sh", "Ubuntu", "/usr/bin/sh")),
+        )
+        .await;
+
+        assert!(reg.get("native-wsl-test:wsl:ubuntu").await.is_some());
+
+        reg.set_wsl_enabled(false).await;
+        assert!(!reg.is_wsl_enabled());
+        assert!(reg.get("native-wsl-test:wsl:ubuntu").await.is_none());
+        assert!(
+            reg.list_all()
+                .await
+                .iter()
+                .all(|m| m.runtime.as_ref().is_none_or(|runtime| !runtime.is_wsl()))
+        );
+
+        reg.set_wsl_enabled(true).await;
+        assert!(reg.is_wsl_enabled());
+        assert!(reg.get("native-wsl-test:wsl:ubuntu").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn unsupported_host_never_derives_wsl_rows_even_when_enabled() {
+        let reg = registry_with_unsupported_wsl_probe(
+            MockWslProbeProvider::default().with_report("sh", available_wsl_report("sh", "Ubuntu", "/usr/bin/sh")),
+        )
+        .await;
+
+        assert!(!reg.is_wsl_supported());
+        assert!(!reg.is_wsl_enabled());
+        assert!(reg.get("native-wsl-test").await.is_some());
+        assert!(reg.get("native-wsl-test:wsl:ubuntu").await.is_none());
+
+        reg.set_wsl_enabled(true).await;
+        assert!(!reg.is_wsl_enabled());
+        assert!(reg.get("native-wsl-test:wsl:ubuntu").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn wsl_probe_failure_does_not_remove_native_rows() {
+        let reg = registry_with_wsl_probe(MockWslProbeProvider::default().with_unavailable_wsl()).await;
+
+        let visible = reg.list_all().await;
+        assert!(
+            visible.iter().any(|m| m.id == "native-wsl-test"),
+            "native row should remain visible when WSL probe is unavailable"
+        );
+        assert!(
+            visible
+                .iter()
+                .all(|m| m.runtime.as_ref().is_none_or(|runtime| !runtime.is_wsl())),
+            "unavailable WSL probe should not create WSL rows"
         );
     }
 

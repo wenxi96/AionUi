@@ -16,7 +16,8 @@ use axum::routing::{get, patch, post, put};
 use aionui_api_types::{
     AcpHealthCheckRequest, AcpHealthCheckResponse, AgentMetadata, ApiResponse, CustomAgentUpsertRequest,
     DeleteCustomAgentResponse, ProviderHealthCheckRequest, ProviderHealthCheckResponse, SetEnabledRequest,
-    TryConnectCustomAgentRequest, TryConnectCustomAgentResponse,
+    TryConnectCustomAgentRequest, TryConnectCustomAgentResponse, UpdateWslRuntimeSettingsRequest,
+    WslRuntimeSettingsResponse,
 };
 use aionui_auth::CurrentUser;
 use aionui_common::ApiError;
@@ -28,6 +29,10 @@ pub fn agent_routes(state: AgentRouterState) -> Router {
     Router::new()
         .route("/api/agents", get(list_agents))
         .route("/api/agents/refresh", post(refresh_agents))
+        .route(
+            "/api/agents/runtime/wsl",
+            get(get_wsl_runtime_settings).patch(update_wsl_runtime_settings),
+        )
         .route("/api/agents/health-check", post(health_check))
         .route("/api/agents/provider-health-check", post(provider_health_check))
         .route("/api/agents/{id}/enabled", patch(set_agent_enabled))
@@ -52,6 +57,34 @@ async fn refresh_agents(
 ) -> Result<Json<ApiResponse<Vec<AgentMetadata>>>, ApiError> {
     Ok(Json(ApiResponse::ok(
         state.service.refresh_agents().await.map_err(agent_error_to_api_error)?,
+    )))
+}
+
+async fn get_wsl_runtime_settings(
+    State(state): State<AgentRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<WslRuntimeSettingsResponse>>, ApiError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .get_wsl_runtime_settings()
+            .await
+            .map_err(agent_error_to_api_error)?,
+    )))
+}
+
+async fn update_wsl_runtime_settings(
+    State(state): State<AgentRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    body: Result<Json<UpdateWslRuntimeSettingsRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<WslRuntimeSettingsResponse>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .update_wsl_runtime_settings(req.enabled)
+            .await
+            .map_err(agent_error_to_api_error)?,
     )))
 }
 

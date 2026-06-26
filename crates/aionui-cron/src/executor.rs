@@ -1007,11 +1007,39 @@ async fn inject_agent_identity(
     registry: &AgentRegistry,
     job: &CronJob,
 ) {
+    let config_agent_id = job
+        .agent_config
+        .as_ref()
+        .and_then(|c| c.agent_id.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let config_backend = job
         .agent_config
         .as_ref()
         .map(|c| c.backend.trim())
         .filter(|s| !s.is_empty());
+
+    if let Some(agent_id) = config_agent_id
+        && let Some(meta) = registry.get(agent_id).await
+    {
+        extra.insert("agent_id".to_owned(), serde_json::Value::String(meta.id.clone()));
+        extra.insert(
+            "agent_source".to_owned(),
+            serde_json::Value::String(agent_source_str(meta.agent_source).to_owned()),
+        );
+        if let Some(runtime_scope_id) = meta.runtime_scope_id {
+            extra.insert(
+                "runtime_scope_id".to_owned(),
+                serde_json::Value::String(runtime_scope_id),
+            );
+        }
+        if let Some(backend) = meta.backend {
+            extra.insert("backend".to_owned(), serde_json::Value::String(backend));
+        } else if let Some(backend) = config_backend {
+            extra.insert("backend".to_owned(), serde_json::Value::String(backend.to_owned()));
+        }
+        return;
+    }
 
     let lookup_label = config_backend.unwrap_or_else(|| job.agent_type.trim());
     if lookup_label.is_empty() {
@@ -1020,6 +1048,10 @@ async fn inject_agent_identity(
 
     if let Some(meta) = registry.find_builtin_by_backend(lookup_label).await {
         extra.insert("agent_id".to_owned(), serde_json::Value::String(meta.id.clone()));
+        extra.insert(
+            "agent_source".to_owned(),
+            serde_json::Value::String(agent_source_str(meta.agent_source).to_owned()),
+        );
         if let Some(backend) = meta.backend {
             extra.insert("backend".to_owned(), serde_json::Value::String(backend));
         }
@@ -1030,6 +1062,15 @@ async fn inject_agent_identity(
     // so existing rows keep working.
     if let Some(backend) = config_backend {
         extra.insert("backend".to_owned(), serde_json::Value::String(backend.to_owned()));
+    }
+}
+
+fn agent_source_str(source: aionui_api_types::AgentSource) -> &'static str {
+    match source {
+        aionui_api_types::AgentSource::Internal => "internal",
+        aionui_api_types::AgentSource::Builtin => "builtin",
+        aionui_api_types::AgentSource::Extension => "extension",
+        aionui_api_types::AgentSource::Custom => "custom",
     }
 }
 
@@ -1048,6 +1089,12 @@ async fn build_task_extra(registry: &AgentRegistry, job: &CronJob, skills: &[Str
     inject_agent_identity(&mut extra, registry, job).await;
 
     if let Some(config) = &job.agent_config {
+        if let Some(runtime_scope_id) = &config.runtime_scope_id {
+            extra.insert(
+                "runtime_scope_id".to_owned(),
+                serde_json::Value::String(runtime_scope_id.clone()),
+            );
+        }
         if let Some(cli_path) = &config.cli_path {
             extra.insert("cli_path".to_owned(), serde_json::Value::String(cli_path.clone()));
         }
@@ -1118,6 +1165,12 @@ async fn build_conversation_extra(
     inject_agent_identity(&mut extra, registry, job).await;
 
     if let Some(config) = &job.agent_config {
+        if let Some(runtime_scope_id) = &config.runtime_scope_id {
+            extra.insert(
+                "runtime_scope_id".to_owned(),
+                serde_json::Value::String(runtime_scope_id.clone()),
+            );
+        }
         if let Some(cli_path) = &config.cli_path {
             extra.insert("cli_path".to_owned(), serde_json::Value::String(cli_path.clone()));
         }
@@ -1254,6 +1307,8 @@ mod tests {
             agent_config: Some(CronAgentConfig {
                 backend: "acp".into(),
                 name: "Claude".into(),
+                agent_id: None,
+                runtime_scope_id: None,
                 cli_path: Some("/usr/bin/claude".into()),
                 is_preset: None,
                 custom_agent_id: None,
@@ -1540,6 +1595,8 @@ mod tests {
             agent_config: Some(CronAgentConfig {
                 backend: "4056cdea".into(),
                 name: "OpenAI".into(),
+                agent_id: None,
+                runtime_scope_id: None,
                 cli_path: None,
                 is_preset: None,
                 custom_agent_id: None,
@@ -1563,6 +1620,8 @@ mod tests {
             agent_config: Some(CronAgentConfig {
                 backend: "4056cdea".into(),
                 name: "OpenAI".into(),
+                agent_id: None,
+                runtime_scope_id: None,
                 cli_path: None,
                 is_preset: None,
                 custom_agent_id: None,
@@ -1598,6 +1657,8 @@ mod tests {
             agent_config: Some(CronAgentConfig {
                 backend: "   ".into(),
                 name: "Bogus".into(),
+                agent_id: None,
+                runtime_scope_id: None,
                 cli_path: None,
                 is_preset: None,
                 custom_agent_id: None,
@@ -1658,6 +1719,35 @@ mod tests {
         // Vendor label must resolve to a catalog row so the factory can
         // skip the `find_builtin_by_backend` fallback.
         assert!(extra.get("agent_id").and_then(|v| v.as_str()).is_some());
+    }
+
+    #[tokio::test]
+    async fn build_task_extra_prefers_saved_agent_id_over_backend_label() {
+        let registry = hydrated_registry().await;
+        let job = CronJob {
+            agent_config: Some(CronAgentConfig {
+                backend: "qwen".into(),
+                name: "Codex WSL row".into(),
+                agent_id: Some("8e1acf31".into()),
+                runtime_scope_id: Some("wsl:Ubuntu".into()),
+                cli_path: None,
+                is_preset: None,
+                custom_agent_id: None,
+                preset_agent_type: None,
+                mode: None,
+                model_id: None,
+                config_options: None,
+                workspace: None,
+            }),
+            ..sample_job()
+        };
+
+        let extra = build_task_extra(&registry, &job, &[]).await;
+
+        assert_eq!(extra["agent_id"], "8e1acf31");
+        assert_eq!(extra["backend"], "codex");
+        assert_eq!(extra["agent_source"], "builtin");
+        assert_eq!(extra["runtime_scope_id"], "wsl:Ubuntu");
     }
 
     #[tokio::test]

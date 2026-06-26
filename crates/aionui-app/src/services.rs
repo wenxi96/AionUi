@@ -12,15 +12,18 @@ use aionui_auth::{CookieConfig, JwtService, QrTokenStore, resolve_jwt_secret};
 use aionui_common::OnConversationDelete;
 use aionui_conversation::{ConversationService, runtime_state::ConversationRuntimeStateService};
 use aionui_db::{
-    Database, IAcpSessionRepository, IAgentMetadataRepository, IConversationRepository, IMcpServerRepository,
-    IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository,
-    SqliteAssistantOverlayRepository, SqliteAssistantPreferenceRepository, SqliteConversationRepository,
-    SqliteMcpServerRepository, SqliteProviderRepository, SqliteUserRepository,
+    Database, IAcpSessionRepository, IAgentMetadataRepository, IClientPreferenceRepository, IConversationRepository,
+    IMcpServerRepository, IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
+    SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository, SqliteAssistantPreferenceRepository,
+    SqliteClientPreferenceRepository, SqliteConversationRepository, SqliteMcpServerRepository,
+    SqliteProviderRepository, SqliteUserRepository,
 };
 use aionui_realtime::{BroadcastEventBus, WebSocketManager};
 use aionui_team::GuideMcpServer;
 
 use crate::config::{AppConfig, derive_encryption_key};
+
+const WSL_RUNTIME_ENABLED_PREF_KEY: &str = "agentRuntime.wsl.enabled";
 
 pub struct AppServices {
     pub database: Database,
@@ -127,7 +130,10 @@ impl AppServices {
 
         let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> =
             Arc::new(SqliteAgentMetadataRepository::new(database.pool().clone()));
-        let agent_registry = AgentRegistry::new(agent_metadata_repo);
+        let client_pref_repo: Arc<dyn IClientPreferenceRepository> =
+            Arc::new(SqliteClientPreferenceRepository::new(database.pool().clone()));
+        let wsl_runtime_enabled = load_wsl_runtime_enabled(client_pref_repo.as_ref()).await?;
+        let agent_registry = AgentRegistry::new_with_wsl_enabled(agent_metadata_repo, wsl_runtime_enabled);
         agent_registry
             .hydrate()
             .await
@@ -235,6 +241,18 @@ impl AppServices {
             _guide_server: guide_server,
         })
     }
+}
+
+async fn load_wsl_runtime_enabled(repo: &dyn IClientPreferenceRepository) -> anyhow::Result<bool> {
+    let rows = repo
+        .get_by_keys(&[WSL_RUNTIME_ENABLED_PREF_KEY])
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to load WSL runtime preference: {e}"))?;
+    let enabled = rows
+        .first()
+        .and_then(|row| serde_json::from_str::<bool>(&row.value).ok())
+        .unwrap_or_else(AgentRegistry::default_wsl_enabled_by_host);
+    Ok(enabled)
 }
 
 struct ConversationServiceDeps<'a> {

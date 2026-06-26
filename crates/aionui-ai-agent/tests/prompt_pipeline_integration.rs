@@ -59,6 +59,7 @@ async fn fixture_params(
             "conv-pp-test".into(),
             WorkspaceInfo {
                 path: "/tmp".into(),
+                runtime_path: "/tmp".into(),
                 is_custom: is_custom_workspace,
             },
             metadata,

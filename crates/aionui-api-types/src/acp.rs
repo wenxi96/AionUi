@@ -23,6 +23,10 @@ pub struct DetectCliResponse {
 #[derive(Debug, Deserialize)]
 pub struct AcpHealthCheckRequest {
     pub backend: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub runtime_scope_id: Option<String>,
 }
 
 /// Response for ACP health check.
@@ -257,6 +261,20 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["available"], false);
         assert_eq!(json["error"], "CLI not found");
+    }
+
+    #[test]
+    fn health_check_request_accepts_optional_runtime_identity() {
+        let req: AcpHealthCheckRequest = serde_json::from_value(json!({
+            "backend": "claude",
+            "agent_id": "builtin-claude:wsl:ubuntu",
+            "runtime_scope_id": "wsl:Ubuntu"
+        }))
+        .unwrap();
+
+        assert_eq!(req.backend, "claude");
+        assert_eq!(req.agent_id.as_deref(), Some("builtin-claude:wsl:ubuntu"));
+        assert_eq!(req.runtime_scope_id.as_deref(), Some("wsl:Ubuntu"));
     }
 
     #[test]

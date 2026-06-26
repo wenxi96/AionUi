@@ -80,6 +80,8 @@ impl CronService {
         let agent_config = req.agent_config.map(|c| CronAgentConfig {
             backend: c.backend,
             name: c.name,
+            agent_id: c.agent_id,
+            runtime_scope_id: c.runtime_scope_id,
             cli_path: c.cli_path,
             is_preset: c.is_preset,
             custom_agent_id: c.custom_agent_id,
@@ -164,6 +166,8 @@ impl CronService {
             job.agent_config = Some(CronAgentConfig {
                 backend: config_dto.backend.clone(),
                 name: config_dto.name.clone(),
+                agent_id: config_dto.agent_id.clone(),
+                runtime_scope_id: config_dto.runtime_scope_id.clone(),
                 cli_path: config_dto.cli_path.clone(),
                 is_preset: config_dto.is_preset,
                 custom_agent_id: config_dto.custom_agent_id.clone(),
@@ -1074,6 +1078,8 @@ fn build_agent_config_from_conversation(
     let agent_config = aionui_api_types::CronAgentConfigDto {
         backend,
         name: get_string(&extra, &["agent_name", "agentName"]).unwrap_or_else(|| row.name.clone()),
+        agent_id: get_string(&extra, &["agent_id", "agentId"]),
+        runtime_scope_id: get_string(&extra, &["runtime_scope_id", "runtimeScopeId"]),
         cli_path: get_string(&extra, &["cli_path", "cliPath"]).or_else(|| {
             extra
                 .get("gateway")
@@ -1209,6 +1215,8 @@ fn build_update_params(job: &CronJob, req: &UpdateCronJobRequest) -> UpdateCronJ
         let config = CronAgentConfig {
             backend: c.backend.clone(),
             name: c.name.clone(),
+            agent_id: c.agent_id.clone(),
+            runtime_scope_id: c.runtime_scope_id.clone(),
             cli_path: c.cli_path.clone(),
             is_preset: c.is_preset,
             custom_agent_id: c.custom_agent_id.clone(),
@@ -1331,6 +1339,8 @@ mod tests {
         aionui_api_types::CronAgentConfigDto {
             backend: backend.to_owned(),
             name: "provider".into(),
+            agent_id: None,
+            runtime_scope_id: None,
             cli_path: None,
             is_preset: None,
             custom_agent_id: None,

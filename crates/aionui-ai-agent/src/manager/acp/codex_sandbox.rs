@@ -25,6 +25,7 @@ impl CodexSandboxMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CodexSandboxSyncOutcome {
     SkippedNonCodex,
+    SkippedRuntimeManaged,
     Synced(CodexSandboxMode),
     Failed(CodexSandboxMode),
 }
@@ -39,6 +40,9 @@ pub(super) fn sandbox_mode_for_requested_mode(mode: Option<&str>) -> CodexSandbo
 pub(super) async fn sync_for_agent(metadata: &AgentMetadata, requested_mode: Option<&str>) -> CodexSandboxSyncOutcome {
     if metadata.backend.as_deref() != Some("codex") {
         return CodexSandboxSyncOutcome::SkippedNonCodex;
+    }
+    if metadata.runtime.as_ref().is_some_and(|runtime| runtime.is_wsl()) {
+        return CodexSandboxSyncOutcome::SkippedRuntimeManaged;
     }
 
     let sandbox_mode = sandbox_mode_for_requested_mode(requested_mode);
@@ -64,6 +68,9 @@ async fn sync_for_agent_at_path(
 ) -> CodexSandboxSyncOutcome {
     if metadata.backend.as_deref() != Some("codex") {
         return CodexSandboxSyncOutcome::SkippedNonCodex;
+    }
+    if metadata.runtime.as_ref().is_some_and(|runtime| runtime.is_wsl()) {
+        return CodexSandboxSyncOutcome::SkippedRuntimeManaged;
     }
 
     let sandbox_mode = sandbox_mode_for_requested_mode(requested_mode);
@@ -225,6 +232,9 @@ mod tests {
             agent_type: aionui_common::AgentType::Acp,
             agent_source: aionui_api_types::AgentSource::Builtin,
             agent_source_info: aionui_api_types::AgentSourceInfo::default(),
+            runtime: None,
+            runtime_scope_id: None,
+            runtime_display_name: None,
             enabled: true,
             available: true,
             command: None,
@@ -375,6 +385,24 @@ web_search = true
         .await;
 
         assert_eq!(outcome, CodexSandboxSyncOutcome::SkippedNonCodex);
+        assert!(!config_path.exists());
+    }
+
+    #[tokio::test]
+    async fn sync_for_agent_at_path_skips_wsl_codex_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let mut metadata = metadata_with_backend(Some("codex"));
+        metadata.runtime = Some(aionui_api_types::AgentRuntimeMetadata {
+            kind: "wsl".into(),
+            distro: Some("Ubuntu".into()),
+            cli_path: Some("/usr/bin/codex".into()),
+            ..Default::default()
+        });
+
+        let outcome = sync_for_agent_at_path(&metadata, Some("full-access"), &config_path).await;
+
+        assert_eq!(outcome, CodexSandboxSyncOutcome::SkippedRuntimeManaged);
         assert!(!config_path.exists());
     }
 

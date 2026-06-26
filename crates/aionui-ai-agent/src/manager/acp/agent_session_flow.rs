@@ -171,7 +171,7 @@ impl AcpAgentManager {
         };
 
         if supports_load {
-            let mut load_req = LoadSessionRequest::new(SessionId::new(session_id), &self.params.workspace.path);
+            let mut load_req = LoadSessionRequest::new(SessionId::new(session_id), &self.params.workspace.runtime_path);
             if !self.params.mcp_servers.is_empty() {
                 load_req = load_req.mcp_servers(self.params.mcp_servers.clone());
             }

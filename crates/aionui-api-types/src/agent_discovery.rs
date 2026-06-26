@@ -13,6 +13,7 @@
 
 use aionui_common::AgentType;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// How an agent row was sourced.
@@ -106,6 +107,41 @@ pub struct AgentHandshake {
     pub available_commands: Option<serde_json::Value>,
 }
 
+/// Runtime environment metadata for an agent row.
+///
+/// This is intentionally open-ended: callers must branch only on known
+/// `kind` values and leave unknown future runtime kinds on the native-safe
+/// path. Extra fields are preserved so newer backends do not break older
+/// frontend/runtime consumers.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct AgentRuntimeMetadata {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distro: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "cliPath")]
+    pub cli_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "pathEnv")]
+    pub path_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "detectedAt")]
+    pub detected_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "probeMode")]
+    pub probe_mode: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl AgentRuntimeMetadata {
+    pub fn is_wsl(&self) -> bool {
+        self.kind == "wsl"
+    }
+}
+
 /// The unified, decoded view of an `agent_metadata` row.
 ///
 /// Also the API response shape: `/api/agents` returns a list of these
@@ -131,6 +167,12 @@ pub struct AgentMetadata {
     pub agent_source: AgentSource,
     #[serde(default)]
     pub agent_source_info: AgentSourceInfo,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<AgentRuntimeMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_scope_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_display_name: Option<String>,
 
     pub enabled: bool,
 
@@ -213,6 +255,9 @@ mod tests {
             agent_type: AgentType::Acp,
             agent_source: AgentSource::Builtin,
             agent_source_info: AgentSourceInfo::default(),
+            runtime: None,
+            runtime_scope_id: None,
+            runtime_display_name: None,
             enabled: true,
             available: true,
             command: None,
@@ -254,6 +299,145 @@ mod tests {
         assert!(!meta.available);
         assert!(!meta.behavior_policy.supports_side_question);
         assert!(meta.handshake.agent_capabilities.is_none());
+        assert!(meta.runtime.is_none());
+        assert!(meta.runtime_scope_id.is_none());
+        assert!(meta.runtime_display_name.is_none());
+    }
+
+    #[test]
+    fn agent_metadata_roundtrips_native_runtime_fields() {
+        let payload = json!({
+            "id": "native-claude",
+            "name": "Claude",
+            "backend": "claude",
+            "agent_type": "acp",
+            "agent_source": "builtin",
+            "runtime": {
+                "kind": "native",
+                "platform": "windows"
+            },
+            "runtime_scope_id": "native:windows",
+            "runtime_display_name": "Windows",
+            "enabled": true,
+            "available": true,
+            "sort_order": 3100,
+        });
+        let meta: AgentMetadata = serde_json::from_value(payload).unwrap();
+        let runtime = meta.runtime.as_ref().unwrap();
+        assert_eq!(runtime.kind, "native");
+        assert_eq!(runtime.platform.as_deref(), Some("windows"));
+        assert!(!runtime.is_wsl());
+        assert_eq!(meta.runtime_scope_id.as_deref(), Some("native:windows"));
+
+        let v = serde_json::to_value(&meta).unwrap();
+        assert_eq!(v["runtime"]["kind"], "native");
+        assert_eq!(v["runtime"]["platform"], "windows");
+        assert_eq!(v["runtime_scope_id"], "native:windows");
+    }
+
+    #[test]
+    fn agent_metadata_roundtrips_wsl_runtime_fields() {
+        let payload = json!({
+            "id": "wsl-ubuntu-claude",
+            "name": "Claude on Ubuntu",
+            "backend": "claude",
+            "agent_type": "acp",
+            "agent_source": "builtin",
+            "runtime": {
+                "kind": "wsl",
+                "distro": "Ubuntu",
+                "version": 2,
+                "state": "Running",
+                "cliPath": "/usr/local/bin/claude",
+                "pathEnv": "/usr/local/bin:/usr/bin",
+                "detectedAt": 1782183123,
+                "probeMode": "clean-shell"
+            },
+            "runtime_scope_id": "wsl:Ubuntu",
+            "runtime_display_name": "Ubuntu",
+            "enabled": true,
+            "available": true,
+            "sort_order": 3110,
+        });
+        let meta: AgentMetadata = serde_json::from_value(payload).unwrap();
+        let runtime = meta.runtime.as_ref().unwrap();
+        assert!(runtime.is_wsl());
+        assert_eq!(runtime.distro.as_deref(), Some("Ubuntu"));
+        assert_eq!(runtime.version.as_ref(), Some(&json!(2)));
+        assert_eq!(runtime.cli_path.as_deref(), Some("/usr/local/bin/claude"));
+        assert_eq!(runtime.path_env.as_deref(), Some("/usr/local/bin:/usr/bin"));
+        assert_eq!(runtime.detected_at, Some(1782183123));
+        assert_eq!(runtime.probe_mode.as_deref(), Some("clean-shell"));
+
+        let v = serde_json::to_value(&meta).unwrap();
+        assert_eq!(v["runtime"]["kind"], "wsl");
+        assert_eq!(v["runtime"]["cliPath"], "/usr/local/bin/claude");
+        assert_eq!(v["runtime"]["pathEnv"], "/usr/local/bin:/usr/bin");
+        assert_eq!(v["runtime_scope_id"], "wsl:Ubuntu");
+    }
+
+    #[test]
+    fn agent_metadata_roundtrips_wsl_custom_runtime_fields() {
+        let payload = json!({
+            "id": "custom-wsl-agent",
+            "name": "Custom WSL Agent",
+            "backend": "custom-cli",
+            "agent_type": "acp",
+            "agent_source": "custom",
+            "runtime": {
+                "kind": "wsl",
+                "distro": "Debian",
+                "version": 2,
+                "state": "Stopped",
+                "cliPath": "/home/me/bin/custom-agent"
+            },
+            "runtime_scope_id": "wsl:Debian",
+            "runtime_display_name": "Debian",
+            "enabled": true,
+            "available": false,
+            "sort_order": 4110,
+        });
+        let meta: AgentMetadata = serde_json::from_value(payload).unwrap();
+        let runtime = meta.runtime.as_ref().unwrap();
+        assert_eq!(meta.agent_source, AgentSource::Custom);
+        assert!(runtime.is_wsl());
+        assert_eq!(runtime.distro.as_deref(), Some("Debian"));
+        assert_eq!(runtime.state.as_deref(), Some("Stopped"));
+        assert_eq!(runtime.cli_path.as_deref(), Some("/home/me/bin/custom-agent"));
+        assert_eq!(meta.runtime_scope_id.as_deref(), Some("wsl:Debian"));
+    }
+
+    #[test]
+    fn agent_metadata_preserves_unknown_runtime_kind() {
+        let payload = json!({
+            "id": "container-claude",
+            "name": "Claude in Container",
+            "backend": "claude",
+            "agent_type": "acp",
+            "agent_source": "builtin",
+            "runtime": {
+                "kind": "container",
+                "image": "ghcr.io/example/claude:latest",
+                "version": "2026-preview"
+            },
+            "enabled": true,
+            "available": true,
+            "sort_order": 3120,
+        });
+        let meta: AgentMetadata = serde_json::from_value(payload).unwrap();
+        let runtime = meta.runtime.as_ref().unwrap();
+        assert_eq!(runtime.kind, "container");
+        assert!(!runtime.is_wsl());
+        assert_eq!(
+            runtime.extra.get("image"),
+            Some(&json!("ghcr.io/example/claude:latest"))
+        );
+        assert_eq!(runtime.version.as_ref(), Some(&json!("2026-preview")));
+
+        let v = serde_json::to_value(&meta).unwrap();
+        assert_eq!(v["runtime"]["kind"], "container");
+        assert_eq!(v["runtime"]["image"], "ghcr.io/example/claude:latest");
+        assert_eq!(v["runtime"]["version"], "2026-preview");
     }
 }
 

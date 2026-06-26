@@ -9,7 +9,7 @@ pub use aionui_api_types::AgentStreamErrorData as ErrorEventData;
 
 pub use permission::{
     AcpPermissionEventData, AcpPermissionOptionData, AcpPermissionOptionKind, AcpPermissionRequestData,
-    AcpPermissionToolCall,
+    AcpPermissionRuntimeContext, AcpPermissionToolCall,
 };
 pub use session_updates::{
     AgentStatusEventData, AvailableCommandsEventData, CronTriggerEventData, PlanEventData, SkillSuggestEventData,
@@ -20,7 +20,7 @@ pub use tool_call::{
     AcpToolCallSessionUpdateKind, AcpToolCallStatus, AcpToolCallTextBlock, AcpToolCallTextBlockType,
     AcpToolCallUpdateData, ToolCallEventData, ToolCallStatus, ToolGroupEntry,
 };
-pub(crate) use translate::{permission_request_to_event_data, session_notification_to_events};
+pub(crate) use translate::{permission_request_to_event_data_with_context, session_notification_to_events};
 
 /// Events emitted by an Agent during a message processing turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -574,7 +574,7 @@ mod tests {
             ],
         );
 
-        let event = AgentStreamEvent::AcpPermission(permission_request_to_event_data(&request));
+        let event = AgentStreamEvent::AcpPermission(permission_request_to_event_data_with_context(&request, None));
         let json = serde_json::to_value(&event).unwrap();
 
         assert_eq!(json["type"], "acp_permission");
@@ -583,8 +583,63 @@ mod tests {
         assert_eq!(json["data"]["tool_call"]["raw_input"]["file_path"], "/tmp/a.txt");
         assert_eq!(json["data"]["options"][0]["option_id"], "allow");
         assert_eq!(json["data"]["options"][0]["kind"], "allow_once");
+        assert!(json["data"].get("runtime_context").is_none());
         assert!(json["data"].get("toolCall").is_none());
         assert!(json["data"]["options"][0].get("optionId").is_none());
+    }
+
+    #[test]
+    fn permission_request_can_include_wsl_runtime_context() {
+        let request = RequestPermissionRequest::new(
+            "sess-1",
+            SdkToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new()
+                    .title("Write file")
+                    .kind(SdkToolKind::Edit)
+                    .raw_input(json!({ "file_path": "/home/cheng/project/a.txt" })),
+            ),
+            vec![PermissionOption::new(
+                "allow",
+                "Allow",
+                SdkPermissionOptionKind::AllowOnce,
+            )],
+        );
+
+        let runtime_context = AcpPermissionRuntimeContext {
+            runtime_kind: "wsl".to_owned(),
+            runtime_scope_id: Some("wsl:Ubuntu".to_owned()),
+            runtime_display_name: Some("Ubuntu".to_owned()),
+            distro: Some("Ubuntu".to_owned()),
+            agent_path: Some("/usr/local/bin/claude".to_owned()),
+            workspace_host_path: "D:\\code\\project".to_owned(),
+            workspace_runtime_path: "/mnt/d/code/project".to_owned(),
+        };
+
+        let event = AgentStreamEvent::AcpPermission(permission_request_to_event_data_with_context(
+            &request,
+            Some(runtime_context),
+        ));
+        let json = serde_json::to_value(&event).unwrap();
+
+        assert_eq!(json["type"], "acp_permission");
+        assert_eq!(json["data"]["runtime_context"]["runtime_kind"], "wsl");
+        assert_eq!(json["data"]["runtime_context"]["runtime_scope_id"], "wsl:Ubuntu");
+        assert_eq!(json["data"]["runtime_context"]["runtime_display_name"], "Ubuntu");
+        assert_eq!(json["data"]["runtime_context"]["distro"], "Ubuntu");
+        assert_eq!(json["data"]["runtime_context"]["agent_path"], "/usr/local/bin/claude");
+        assert_eq!(
+            json["data"]["runtime_context"]["workspace_host_path"],
+            "D:\\code\\project"
+        );
+        assert_eq!(
+            json["data"]["runtime_context"]["workspace_runtime_path"],
+            "/mnt/d/code/project"
+        );
+        assert_eq!(
+            json["data"]["tool_call"]["raw_input"]["file_path"],
+            "/home/cheng/project/a.txt"
+        );
     }
 
     #[test]

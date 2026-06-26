@@ -17,20 +17,24 @@ use std::sync::Arc;
 
 use aionui_api_types::{
     AcpHealthCheckRequest, AcpHealthCheckResponse, AgentMetadata, ProviderHealthCheckRequest,
-    ProviderHealthCheckResponse,
+    ProviderHealthCheckResponse, WslRuntimeSettingsResponse,
 };
-use aionui_db::IProviderRepository;
+use aionui_db::{IClientPreferenceRepository, IProviderRepository};
 use aionui_realtime::EventBroadcaster;
+use serde_json::json;
 
 use super::provider_health::ProviderHealthCheckService;
 use crate::error::AgentError;
 use crate::registry::AgentRegistry;
+
+const WSL_RUNTIME_ENABLED_PREF_KEY: &str = "agentRuntime.wsl.enabled";
 
 pub struct AgentService {
     registry: Arc<AgentRegistry>,
     broadcaster: Arc<dyn EventBroadcaster>,
     data_dir: PathBuf,
     provider_health: ProviderHealthCheckService,
+    client_pref_repo: Arc<dyn IClientPreferenceRepository>,
 }
 
 impl AgentService {
@@ -38,6 +42,7 @@ impl AgentService {
         registry: Arc<AgentRegistry>,
         broadcaster: Arc<dyn EventBroadcaster>,
         provider_repo: Arc<dyn IProviderRepository>,
+        client_pref_repo: Arc<dyn IClientPreferenceRepository>,
         encryption_key: [u8; 32],
         data_dir: PathBuf,
     ) -> Arc<Self> {
@@ -47,6 +52,7 @@ impl AgentService {
             broadcaster,
             data_dir,
             provider_health,
+            client_pref_repo,
         })
     }
 
@@ -90,8 +96,28 @@ impl AgentService {
             .collect())
     }
 
+    pub async fn get_wsl_runtime_settings(&self) -> Result<WslRuntimeSettingsResponse, AgentError> {
+        Ok(WslRuntimeSettingsResponse {
+            enabled: self.registry.is_wsl_enabled(),
+            supported: self.registry.is_wsl_supported(),
+        })
+    }
+
+    pub async fn update_wsl_runtime_settings(&self, enabled: bool) -> Result<WslRuntimeSettingsResponse, AgentError> {
+        let effective_enabled = enabled && self.registry.is_wsl_supported();
+        let value = serde_json::to_string(&json!(effective_enabled))
+            .map_err(|e| AgentError::internal(format!("serialize WSL runtime setting: {e}")))?;
+        self.client_pref_repo
+            .upsert_batch(&[(WSL_RUNTIME_ENABLED_PREF_KEY, value.as_str())])
+            .await
+            .map_err(|e| AgentError::internal(format!("persist WSL runtime setting: {e}")))?;
+
+        self.registry.set_wsl_enabled(effective_enabled).await;
+        self.get_wsl_runtime_settings().await
+    }
+
     pub async fn acp_health_check(&self, req: AcpHealthCheckRequest) -> Result<AcpHealthCheckResponse, AgentError> {
-        Ok(crate::protocol::cli_detect::health_check(&self.registry, &req.backend).await)
+        Ok(crate::protocol::cli_detect::health_check(&self.registry, &req).await)
     }
 
     pub async fn provider_health_check(

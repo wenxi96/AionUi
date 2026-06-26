@@ -1,7 +1,9 @@
 use crate::agent_runtime::AgentRuntime;
 use crate::error::AgentError;
 use crate::protocol::acp::{PermissionDecision, PermissionRequest};
-use crate::protocol::events::{AgentStreamEvent, permission_request_to_event_data};
+use crate::protocol::events::{
+    AcpPermissionRuntimeContext, AgentStreamEvent, permission_request_to_event_data_with_context,
+};
 use agent_client_protocol::schema::PermissionOptionKind as SdkPermissionOptionKind;
 use aionui_api_types::TEAM_MCP_SERVER_NAME;
 use aionui_common::Confirmation;
@@ -53,7 +55,7 @@ impl PermissionRouter {
     /// `runtime` is shared with the parent manager so permission
     /// arrivals count as activity (preventing idle timeouts) via
     /// `runtime.bump_activity()`.
-    pub fn start(self: &Arc<Self>, runtime: AgentRuntime) {
+    pub fn start(self: &Arc<Self>, runtime: AgentRuntime, runtime_context: Option<AcpPermissionRuntimeContext>) {
         let this = Arc::clone(self);
 
         tokio::spawn(async move {
@@ -77,7 +79,8 @@ impl PermissionRouter {
                     continue;
                 }
 
-                let permission_event = permission_request_to_event_data(&perm_req.request);
+                let permission_event =
+                    permission_request_to_event_data_with_context(&perm_req.request, runtime_context.clone());
                 let confirmation = permission_event
                     .as_confirmation()
                     .expect("ACP permission events must be recoverable as confirmations");
@@ -472,7 +475,7 @@ mod tests {
         let router = Arc::new(PermissionRouter::new(permission_rx));
         let runtime = AgentRuntime::new("conv-1", "/tmp/workspace", 8);
         let mut event_rx = runtime.subscribe();
-        router.start(runtime);
+        router.start(runtime, None);
 
         let request = RequestPermissionRequest::new(
             "session-1",
@@ -524,7 +527,7 @@ mod tests {
         let (permission_tx, permission_rx) = mpsc::channel(1);
         let router = Arc::new(PermissionRouter::new(permission_rx));
         let runtime = AgentRuntime::new("conv-1", "/tmp/workspace", 8);
-        router.start(runtime);
+        router.start(runtime, None);
 
         let request = permission_request_with_title_and_raw_input(
             "Approve MCP tool call",

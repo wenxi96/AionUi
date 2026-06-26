@@ -101,6 +101,7 @@ async fn make_mock_agent(script: &str, backend: &str) -> (Arc<AcpAgentManager>, 
             "test-conv-1".into(),
             WorkspaceInfo {
                 path: "/tmp".into(),
+                runtime_path: "/tmp".into(),
                 is_custom: true,
             },
             metadata,

@@ -51,6 +51,19 @@ pub struct SetEnabledRequest {
     pub enabled: bool,
 }
 
+/// Request body for `PATCH /api/agents/runtime/wsl`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateWslRuntimeSettingsRequest {
+    pub enabled: bool,
+}
+
+/// Response body for WSL runtime settings endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WslRuntimeSettingsResponse {
+    pub enabled: bool,
+    pub supported: bool,
+}
+
 /// Response body for `DELETE /api/agents/custom/{id}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteCustomAgentResponse {
