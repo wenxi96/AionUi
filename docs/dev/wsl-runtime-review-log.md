@@ -87,3 +87,20 @@ Verification:
 
 - The current Linux workspace cannot perform a real Windows desktop install smoke test.
 - The Windows installer must be produced by GitHub Actions from pushed AionCore and AionUi branches, then downloaded and installed on Windows for final manual validation.
+
+## Review Round 5
+
+Status: findings reported, fixes applied.
+
+Findings:
+
+- AionUi manual build accepted `aioncore_repository`, and the standalone `Prepare aioncore binary` step used it correctly. However, `scripts/build-with-builder.js` also prepares aioncore during the platform build step, and the Windows/macOS/Linux build-step environments only passed `AIONUI_BACKEND_RUN_ID`. As a result, Windows packaging fell back to the default `iOfficeAI/AionCore` repository and failed when the AionCore artifact run was hosted in `wenxi96/AionUi`.
+
+Disposition:
+
+- Accepted. `_build-reusable.yml` now passes `AIONUI_BACKEND_REPOSITORY` into the Windows, macOS, and Linux electron-builder steps so every prepare path uses the same artifact repository.
+
+Verification:
+
+- GitHub Actions run `28222485306` reproduced the failure: the prepare step downloaded `aioncore-manual-windows-x64` from `wenxi96/AionUi`, then the Windows build step retried against `iOfficeAI/AionCore` and received a 404.
+- Re-run required after pushing the workflow fix.
