@@ -37,11 +37,11 @@ zsh -lc 'which codex && codex --version'
 
 AionUi 运行在 Windows 桌面环境中，Agent 运行在 WSL 中。常见映射如下：
 
-| Windows path | WSL path |
-| --- | --- |
-| `C:\Users\alice\project` | `/mnt/c/Users/alice/project` |
-| `D:\code\repo` | `/mnt/d/code/repo` |
-| `\\wsl$\Ubuntu\home\alice\repo` | `/home/alice/repo` |
+| Windows path                    | WSL path                     |
+| ------------------------------- | ---------------------------- |
+| `C:\Users\alice\project`        | `/mnt/c/Users/alice/project` |
+| `D:\code\repo`                  | `/mnt/d/code/repo`           |
+| `\\wsl$\Ubuntu\home\alice\repo` | `/home/alice/repo`           |
 
 当 Agent 请求文件权限时，界面应尽量显示 runtime path 和 Windows host path，方便确认实际访问位置。
 

@@ -37,11 +37,11 @@ The same backend can appear as both a Windows row and a WSL row. Pick the row wi
 
 AionUi runs in the Windows desktop environment while the agent runs inside WSL. Common mappings:
 
-| Windows path | WSL path |
-| --- | --- |
-| `C:\Users\alice\project` | `/mnt/c/Users/alice/project` |
-| `D:\code\repo` | `/mnt/d/code/repo` |
-| `\\wsl$\Ubuntu\home\alice\repo` | `/home/alice/repo` |
+| Windows path                    | WSL path                     |
+| ------------------------------- | ---------------------------- |
+| `C:\Users\alice\project`        | `/mnt/c/Users/alice/project` |
+| `D:\code\repo`                  | `/mnt/d/code/repo`           |
+| `\\wsl$\Ubuntu\home\alice\repo` | `/home/alice/repo`           |
 
 When an agent asks for file permissions, the permission card should show the runtime path and the Windows host path when both are available.
 

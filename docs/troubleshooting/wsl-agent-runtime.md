@@ -63,11 +63,11 @@ If auth is required, run the provider login command inside the same distro.
 
 Expected examples:
 
-| Input | Expected runtime path |
-| --- | --- |
-| `C:\Users\alice\repo` | `/mnt/c/Users/alice/repo` |
-| `D:\code\repo` | `/mnt/d/code/repo` |
-| `\\wsl$\Ubuntu\home\alice\repo` | `/home/alice/repo` |
+| Input                           | Expected runtime path     |
+| ------------------------------- | ------------------------- |
+| `C:\Users\alice\repo`           | `/mnt/c/Users/alice/repo` |
+| `D:\code\repo`                  | `/mnt/d/code/repo`        |
+| `\\wsl$\Ubuntu\home\alice\repo` | `/home/alice/repo`        |
 
 If the path cannot be mapped:
 
@@ -98,15 +98,15 @@ If a process remains, capture the backend log and process list before killing it
 
 ## Error Meaning
 
-| Error | Meaning | Suggested action |
-| --- | --- | --- |
-| `WSL_NOT_INSTALLED` | Windows cannot find WSL | Install or enable WSL, then restart AionUi |
-| `WSL_NO_DISTRO` | WSL exists but no distro is available | Install a distro from Microsoft Store or `wsl --install` |
-| `WSL_CLI_NOT_FOUND` | The target CLI was not found in the distro | Install the CLI or fix shell PATH |
-| `WSL_PATH_MAPPING_FAILED` | Workspace path could not be converted | Use a local drive path or WSL-native path |
-| `WSL_NPX_NOT_FOUND` | Bridge backend cannot find `npx` | Install Node.js/npm inside WSL |
-| `WSL_AGENT_AUTH_REQUIRED` | The CLI needs login inside WSL | Run the provider login command in the distro |
-| `WSL_AGENT_NETWORK_FAILED` | Provider call failed through WSL network | Check proxy, DNS, VPN, and certificates |
+| Error                      | Meaning                                    | Suggested action                                         |
+| -------------------------- | ------------------------------------------ | -------------------------------------------------------- |
+| `WSL_NOT_INSTALLED`        | Windows cannot find WSL                    | Install or enable WSL, then restart AionUi               |
+| `WSL_NO_DISTRO`            | WSL exists but no distro is available      | Install a distro from Microsoft Store or `wsl --install` |
+| `WSL_CLI_NOT_FOUND`        | The target CLI was not found in the distro | Install the CLI or fix shell PATH                        |
+| `WSL_PATH_MAPPING_FAILED`  | Workspace path could not be converted      | Use a local drive path or WSL-native path                |
+| `WSL_NPX_NOT_FOUND`        | Bridge backend cannot find `npx`           | Install Node.js/npm inside WSL                           |
+| `WSL_AGENT_AUTH_REQUIRED`  | The CLI needs login inside WSL             | Run the provider login command in the distro             |
+| `WSL_AGENT_NETWORK_FAILED` | Provider call failed through WSL network   | Check proxy, DNS, VPN, and certificates                  |
 
 ## Current Verification Boundary
 

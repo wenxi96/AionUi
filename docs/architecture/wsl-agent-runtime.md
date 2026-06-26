@@ -15,12 +15,12 @@ Rows with the same backend can coexist. For example, `codex` on Windows and `cod
 
 ## Ownership
 
-| Layer | Responsibility |
-| --- | --- |
-| AionUi renderer | Display runtime badges, preserve row identity, show WSL paths in permission UI, expose manual detection refresh, and run Electron smoke checks. |
-| AionUi IPC/http bridge | Normalize backend `AgentMetadata` and send `agent_id` / `runtime_scope_id` where backend APIs support them. |
-| AionCore agent runtime | Detect distros and CLIs, map paths, build WSL spawn configs, run ACP sessions, collect diagnostics, and clean up processes. |
-| AionCore cron | Persist exact agent row identity so scheduled tasks do not fall back from a WSL row to a native backend row. |
+| Layer                  | Responsibility                                                                                                                                  |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| AionUi renderer        | Display runtime badges, preserve row identity, show WSL paths in permission UI, expose manual detection refresh, and run Electron smoke checks. |
+| AionUi IPC/http bridge | Normalize backend `AgentMetadata` and send `agent_id` / `runtime_scope_id` where backend APIs support them.                                     |
+| AionCore agent runtime | Detect distros and CLIs, map paths, build WSL spawn configs, run ACP sessions, collect diagnostics, and clean up processes.                     |
+| AionCore cron          | Persist exact agent row identity so scheduled tasks do not fall back from a WSL row to a native backend row.                                    |
 
 ## Launch Flow
 
