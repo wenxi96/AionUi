@@ -17,10 +17,12 @@ use std::sync::Arc;
 
 use aionui_api_types::{
     AcpHealthCheckRequest, AcpHealthCheckResponse, AgentMetadata, ProviderHealthCheckRequest,
-    ProviderHealthCheckResponse, WslRuntimeSettingsResponse,
+    ProviderHealthCheckResponse, WslRuntimeDiagnostics, WslRuntimeDistroDiagnostics, WslRuntimeIssueDiagnostics,
+    WslRuntimeSettingsResponse,
 };
 use aionui_db::{IClientPreferenceRepository, IProviderRepository};
 use aionui_realtime::EventBroadcaster;
+use aionui_runtime::WslProbeReport;
 use serde_json::json;
 
 use super::provider_health::ProviderHealthCheckService;
@@ -97,9 +99,19 @@ impl AgentService {
     }
 
     pub async fn get_wsl_runtime_settings(&self) -> Result<WslRuntimeSettingsResponse, AgentError> {
+        let enabled = self.registry.is_wsl_enabled();
+        let supported = self.registry.is_wsl_supported();
         Ok(WslRuntimeSettingsResponse {
-            enabled: self.registry.is_wsl_enabled(),
-            supported: self.registry.is_wsl_supported(),
+            enabled,
+            supported,
+            diagnostics: if enabled && supported {
+                self.registry
+                    .wsl_diagnostics()
+                    .await
+                    .map(build_wsl_runtime_diagnostics)
+            } else {
+                None
+            },
         })
     }
 
@@ -125,5 +137,73 @@ impl AgentService {
         req: ProviderHealthCheckRequest,
     ) -> Result<ProviderHealthCheckResponse, AgentError> {
         self.provider_health.health_check(req).await
+    }
+}
+
+fn build_wsl_runtime_diagnostics(report: WslProbeReport) -> WslRuntimeDiagnostics {
+    WslRuntimeDiagnostics {
+        wsl_available: report.wsl_available,
+        status_lines: report.status.map(|status| status.lines).unwrap_or_default(),
+        version_lines: report.version.map(|version| version.lines).unwrap_or_default(),
+        distros: report
+            .distros
+            .into_iter()
+            .map(|probe| WslRuntimeDistroDiagnostics {
+                name: probe.distro.name,
+                state: probe.distro.state,
+                version: probe.distro.version,
+                skipped_reason: probe.skipped_reason,
+            })
+            .collect(),
+        issues: report
+            .issues
+            .into_iter()
+            .map(|issue| WslRuntimeIssueDiagnostics {
+                category: format!("{:?}", issue.category),
+                code: format!("{:?}", issue.code),
+                message: issue.message,
+                stderr_summary: issue.stderr_summary,
+            })
+            .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aionui_runtime::{WslDistro, WslDistroProbe, WslStatus, WslVersion};
+
+    #[test]
+    fn wsl_runtime_diagnostics_preserve_distro_state_without_cli_rows() {
+        let diagnostics = build_wsl_runtime_diagnostics(WslProbeReport {
+            wsl_available: true,
+            status: Some(WslStatus {
+                lines: vec!["Default Distribution: Ubuntu-24.04".into()],
+            }),
+            version: Some(WslVersion {
+                lines: vec!["WSL version: 2.5.10".into()],
+            }),
+            distros: vec![WslDistroProbe {
+                distro: WslDistro {
+                    name: "Ubuntu-24.04".into(),
+                    state: "Running".into(),
+                    version: Some(2),
+                },
+                cli_probe: None,
+                skipped_reason: None,
+            }],
+            issues: Vec::new(),
+        });
+
+        assert!(diagnostics.wsl_available);
+        assert_eq!(
+            diagnostics.status_lines,
+            vec!["Default Distribution: Ubuntu-24.04".to_owned()]
+        );
+        assert_eq!(diagnostics.version_lines, vec!["WSL version: 2.5.10".to_owned()]);
+        assert_eq!(diagnostics.distros.len(), 1);
+        assert_eq!(diagnostics.distros[0].name, "Ubuntu-24.04");
+        assert_eq!(diagnostics.distros[0].state, "Running");
+        assert_eq!(diagnostics.distros[0].version, Some(2));
     }
 }

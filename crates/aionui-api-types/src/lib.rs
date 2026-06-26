@@ -87,7 +87,8 @@ pub use cron::{
 };
 pub use custom_agent::{
     CustomAgentAdvancedOverrides, CustomAgentUpsertRequest, DeleteCustomAgentResponse, SetEnabledRequest,
-    UpdateWslRuntimeSettingsRequest, WslRuntimeSettingsResponse,
+    UpdateWslRuntimeSettingsRequest, WslRuntimeDiagnostics, WslRuntimeDistroDiagnostics, WslRuntimeIssueDiagnostics,
+    WslRuntimeSettingsResponse,
 };
 pub use extension::{
     DisableExtensionRequest, EnableExtensionRequest, ExtensionSummaryResponse, GetI18nRequest, GetPermissionsRequest,

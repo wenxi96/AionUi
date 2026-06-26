@@ -62,6 +62,40 @@ pub struct UpdateWslRuntimeSettingsRequest {
 pub struct WslRuntimeSettingsResponse {
     pub enabled: bool,
     pub supported: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<WslRuntimeDiagnostics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WslRuntimeDiagnostics {
+    pub wsl_available: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub status_lines: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub version_lines: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub distros: Vec<WslRuntimeDistroDiagnostics>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<WslRuntimeIssueDiagnostics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WslRuntimeDistroDiagnostics {
+    pub name: String,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WslRuntimeIssueDiagnostics {
+    pub category: String,
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_summary: Option<String>,
 }
 
 /// Response body for `DELETE /api/agents/custom/{id}`.

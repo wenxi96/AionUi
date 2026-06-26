@@ -202,6 +202,27 @@ where
     }
 
     pub async fn probe(&self, cli_command: Option<&str>) -> WslProbeReport {
+        let base = self.probe_base().await;
+        match cli_command {
+            Some(command) => self.probe_command_from_base(&base, command).await,
+            None => base,
+        }
+    }
+
+    pub async fn probe_commands(&self, cli_commands: Vec<String>) -> Vec<(String, WslProbeReport)> {
+        if cli_commands.is_empty() {
+            return Vec::new();
+        }
+        let base = self.probe_base().await;
+        let mut reports = Vec::with_capacity(cli_commands.len());
+        for command in cli_commands {
+            let report = self.probe_command_from_base(&base, &command).await;
+            reports.push((command, report));
+        }
+        reports
+    }
+
+    async fn probe_base(&self) -> WslProbeReport {
         let status = self
             .run_observed(WslProbeCommandCategory::Status, vec!["--status".into()])
             .await;
@@ -298,19 +319,9 @@ where
                 continue;
             }
 
-            let cli_probe = match cli_command {
-                Some(command) => match self.probe_cli_in_distro(&distro.name, command).await {
-                    Ok(probe) => Some(probe),
-                    Err(issue) => {
-                        issues.push(issue);
-                        None
-                    }
-                },
-                None => None,
-            };
             distro_probes.push(WslDistroProbe {
                 distro,
-                cli_probe,
+                cli_probe: None,
                 skipped_reason: None,
             });
         }
@@ -321,6 +332,36 @@ where
                 lines: status.expect("wsl status should be present after availability check"),
             }),
             version,
+            distros: distro_probes,
+            issues,
+        }
+    }
+
+    async fn probe_command_from_base(&self, base: &WslProbeReport, command: &str) -> WslProbeReport {
+        if !base.wsl_available {
+            return base.clone();
+        }
+
+        let mut issues = base.issues.clone();
+        let mut distro_probes = Vec::with_capacity(base.distros.len());
+        for distro_probe in &base.distros {
+            let mut distro_probe = distro_probe.clone();
+            if distro_probe.skipped_reason.is_none() {
+                distro_probe.cli_probe = match self.probe_cli_in_distro(&distro_probe.distro.name, command).await {
+                    Ok(probe) => Some(probe),
+                    Err(issue) => {
+                        issues.push(issue);
+                        None
+                    }
+                };
+            }
+            distro_probes.push(distro_probe);
+        }
+
+        WslProbeReport {
+            wsl_available: true,
+            status: base.status.clone(),
+            version: base.version.clone(),
             distros: distro_probes,
             issues,
         }
@@ -691,6 +732,41 @@ mod tests {
         assert_eq!(calls[3][5], USER_SHELL_EXEC_SCRIPT);
         assert_eq!(calls[3][7], CLI_PROBE_SCRIPT);
         assert_eq!(calls[3][9], "claude");
+    }
+
+    #[tokio::test]
+    async fn probe_commands_reuses_wsl_base_probe_for_multiple_cli_commands() {
+        let runner = MockRunner::new(vec![
+            ok("Default Distribution: Ubuntu\n"),
+            ok("WSL version: 2.5.0\n"),
+            ok("NAME STATE VERSION\nUbuntu Running 2\n"),
+            ok("/usr/bin/claude\n__AIONUI_WSL_PROBE_EXIT__:0\n"),
+            ok("/usr/bin/codex\n__AIONUI_WSL_PROBE_EXIT__:0\n"),
+        ]);
+        let service = WslService::with_runner(runner.clone());
+        let reports = service
+            .probe_commands(vec!["claude".into(), "codex".into()])
+            .await;
+
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0].0, "claude");
+        assert_eq!(
+            reports[0].1.distros[0].cli_probe.as_ref().unwrap().found_path.as_deref(),
+            Some("/usr/bin/claude")
+        );
+        assert_eq!(reports[1].0, "codex");
+        assert_eq!(
+            reports[1].1.distros[0].cli_probe.as_ref().unwrap().found_path.as_deref(),
+            Some("/usr/bin/codex")
+        );
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 5);
+        assert_eq!(calls[0], vec!["--status".to_owned()]);
+        assert_eq!(calls[1], vec!["--version".to_owned()]);
+        assert_eq!(calls[2], vec!["--list".to_owned(), "--verbose".to_owned()]);
+        assert_eq!(calls[3][9], "claude");
+        assert_eq!(calls[4][9], "codex");
     }
 
     #[tokio::test]
